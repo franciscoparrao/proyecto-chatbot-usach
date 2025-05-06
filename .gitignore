@@ -1,0 +1,34 @@
+# --- Secretos y Entorno ---
+# Archivo .env principal usado por Docker Compose y scripts
+.env
+*.env.local
+*.env.*.local
+
+# --- Sistema Operativo ---
+.DS_Store
+Thumbs.db
+
+# --- Editores / IDEs ---
+# (Aunque frontend/.gitignore ya tiene algunos, no hace daño repetirlos o ponerlos aquí)
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# --- Logs Generales ---
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# --- Archivos de Datos Grandes (Opcional pero recomendado) ---
+# Si no quieres subir el JSON de chunks con embeddings a Git
+scripts/processor/chunks_with_embeddings.json 
+# O cualquier otro archivo de datos grande
+*.csv
+
+# --- Otros ---
+# Añade aquí cualquier otra carpeta o archivo temporal general
+temp/
+*.tmp

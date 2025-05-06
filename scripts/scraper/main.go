@@ -133,7 +133,7 @@ func main() {
 	})
 
 	// --- Inicio del Scraping ---
-	startURL := "https://usach.cl/news"
+	startURL := "https://usach.cl/lista-noticias"
 
 	log.Println("Starting scrape at:", startURL)
 	err = c.Visit(startURL)

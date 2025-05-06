@@ -22,8 +22,10 @@ Este proyecto consta de:
 ├── backend/          # Servidor API en Go
 ├── frontend/         # Interfaz de usuario en Vue.js
 └── scripts/          # Utilidades de procesamiento de datos
-    ├── processor/    # Generación de embeddings de contenido
-    └── scraper/      # Herramientas de web scraping
+    ├── scrapper/            # Herramientas de web scraping
+    ├── chunker/             # Generación de chunks del contenido scrappeado
+    ├── chunk-embeddings/    # Generación de embeddings de los chunks
+    └── processor/           # Subida de los vectores a Mongo Atlas
 ```
 
 ## Requisitos Previos
@@ -40,6 +42,9 @@ GOOGLE_API_KEY=tu_clave_de_api_google_ai
 MONGO_URI=tu_cadena_de_conexion_mongodb
 ```
 
+Si prefieres usar .env para trabajar tus variables de entorno puedes usar "github.com/joho/godotenv" que permite este trabajo.
+Si no, en consola escribir export GOOGLE_API_KEY=tu_clave_de_api_google_ai, export=MONGO_URI=tu_cadena_de_conexion_mongodb sirve.
+
 ## Instalación
 
 1. Clonar el repositorio
@@ -54,7 +59,10 @@ MONGO_URI=tu_cadena_de_conexion_mongodb
    npm install
    ```
 
-3. Configurar el backend (deben establecerse las variables de entorno)
+3. Configurar el backend (deben establecerse/exportar las variables de entorno y más si es necesario)
+   3.1 Si necesitas trabajar scrappear/chunkear/hacer embeddings/subir vectores, debes primero trabajar con los scripts realizados.
+   3.2 Debes crear una base de datos en Mongo Atlas y su colección.
+   3.3 Para asegurar la rápida búsqueda semántica, debes crear un vector de búsqueda (index search) en Mongo Atlas. 
 
 ## Ejecutar la Aplicación
 
@@ -71,10 +79,35 @@ MONGO_URI=tu_cadena_de_conexion_mongodb
 
 3. Visitar `http://localhost:8080` en tu navegador
 
-## Licencia
 
-[Añade tu licencia aquí]
+# Cómo correr la aplicación
 
-## Contacto
+1.- Levantar los contenedores usando docker compose up -d en la carpeta deployment.
 
-[Tu información de contacto]
+# Cómo subir archivos a Elasticsearch
+
+1.- correr el siguiente comando: curl -X PUT "http://localhost:9200/usach_chatbot_vectors" -H 'Content-Type: application/json' -d'
+{
+  "mappings": {
+    "properties": {
+      "EmbeddingVector": {
+        "type": "dense_vector",
+        "dims": 768,             
+        "index": true,           
+        "similarity": "cosine"   
+      },
+      "MongoDocID": {         
+        "type": "keyword"        
+      },
+      "OriginalTitle": {        
+         "type": "text"         
+      },
+       "OriginalURL": {
+         "type": "keyword"
+      }
+    }
+  }
+}
+'
+
+2.- Cabe destacar que para conectarse a mongo en una terminal que no conoce al contenedor, se debe usar el primer mapeo de puertos del docker-compose.yml, en este caso 27018.

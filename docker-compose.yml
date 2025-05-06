@@ -1,0 +1,35 @@
+version: '3.8' # Usa una versión reciente de docker-compose
+
+services:
+  # Servicio MongoDB (usando versión 4.4 como indicaste implícitamente que no soporta vector)
+  mongo:
+    image: mongo:4.4 # Puedes cambiar a una versión 5.x o 6.x si prefieres, pero sin Vector Search nativo
+    container_name: mongo_chatbot
+    ports:
+      - "27018:27017" # Mapea el puerto estándar de Mongo a tu localhost
+    volumes:
+      - mongo_data:/data/db # Crea un volumen para persistir los datos de Mongo
+    restart: unless-stopped
+
+  # Servicio Elasticsearch (usando una versión reciente que soporte dense_vector, ej 8.x)
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.2 # Usa una versión 7.3+ u 8.x reciente
+    container_name: elasticsearch_chatbot
+    environment:
+      - discovery.type=single-node # Necesario para correr un solo nodo en desarrollo
+      - xpack.security.enabled=false # DESHABILITA seguridad para pruebas locales fáciles (¡NO HACER EN PRODUCCIÓN!)
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m" # Limitar memoria (ajusta según tu máquina)
+    ports:
+      - "9200:9200" # Mapea el puerto HTTP de Elasticsearch
+      - "9300:9300" # Mapea el puerto de transporte (menos relevante para HTTP)
+    volumes:
+      - es_data:/usr/share/elasticsearch/data # Crea un volumen para persistir los datos de ES
+    ulimits: # Configuraciones recomendadas por Elasticsearch
+      memlock:
+        soft: -1
+        hard: -1
+    restart: unless-stopped
+
+volumes: # Define los volúmenes nombrados
+  mongo_data:
+  es_data:
