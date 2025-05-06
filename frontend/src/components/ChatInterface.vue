@@ -39,9 +39,10 @@
   const messagesAreaRef = ref(null); // To scroll down automatically
   
   // --- Backend API URL ---
-  const backendUrl = 'http://localhost:8000/api/chat'; // URL of your Go backend
+  console.log("backend:", process.env.VUE_APP_BACKEND_URL)
+  const backendUrl = process.env.VUE_APP_BACKEND_URL; // URL from environment variables  
   
-  // --- Functions ---
+// --- Functions ---
   const scrollToBottom = async () => {
     // Wait for DOM update after adding message
     await nextTick(); 

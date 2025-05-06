@@ -5,10 +5,8 @@ services:
     ports:
       - "27018:27017" # Mapea el puerto estándar de Mongo a tu localhost
     volumes:
-      - mongo_data:/data/db # Crea un volumen para persistir los datos de Mongo
+      - proyecto-chatbot-usach_mongo_data:/data/db # Crea un volumen para persistir los datos de Mongo
     restart: unless-stopped
-    networks:
-      - network-chatbot # Conecta el contenedor a la red del chatbot
 
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.13.2 # Usa una versión 7.3+ u 8.x reciente
@@ -21,14 +19,12 @@ services:
       - "9200:9200" # Mapea el puerto HTTP de Elasticsearch
       - "9300:9300" # Mapea el puerto de transporte (menos relevante para HTTP)
     volumes:
-      - es_data:/usr/share/elasticsearch/data # Crea un volumen para persistir los datos de ES
+      - proyecto-chatbot-usach_es_data:/usr/share/elasticsearch/data # Crea un volumen para persistir los datos de ES
     ulimits: # Configuraciones recomendadas por Elasticsearch
       memlock:
         soft: -1
         hard: -1
     restart: unless-stopped
-    networks:
-      - network-chatbot # Conecta el contenedor a la red del chatbot
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9200/"]
       interval: 30s
@@ -39,8 +35,6 @@ services:
     build: ../backend
     container_name: backend-container     
     restart: unless-stopped               
-    networks:
-      - network-chatbot                      
     ports:
       - "8000:8000"
     environment:
@@ -58,18 +52,17 @@ services:
   frontend:
     build: ../frontend
     container_name: frontend-container     
-    restart: unless-stopped             
-    networks:
-      - network-chatbot                    
+    restart: unless-stopped            
     ports:
-      - "80:80"
+      - "3000:3000"
     depends_on:
-      - backend 
-
-networks:
-  network-chatbot:
-    driver: bridge 
+      - backend
+    environment:
+      - VITE_BACKEND_URL=http://backend:8000/api/chat
 
 volumes:
-  mongo_data:
-  es_data:
+  proyecto-chatbot-usach_es_data:
+    external: true
+  proyecto-chatbot-usach_mongo_data:
+    external: true
+
