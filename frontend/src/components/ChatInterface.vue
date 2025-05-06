@@ -39,7 +39,7 @@
   const messagesAreaRef = ref(null); // To scroll down automatically
   
   // --- Backend API URL ---
-  console.log("backend:", process.env.VUE_APP_BACKEND_URL)
+  console.log("backend:", process.env.BACKEND_URL)
   const backendUrl = process.env.VUE_APP_BACKEND_URL; // URL from environment variables  
   
 // --- Functions ---
