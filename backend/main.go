@@ -7,42 +7,45 @@ import (
 	"os"
 	"time"
 
-	"github.com/elastic/go-elasticsearch/v8" // Importar cliente ES
+	"github.com/elastic/go-elasticsearch/v8" 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 
-	// Ajusta este path a tu módulo real si es diferente
 	"github.com/franciscoparrao/proyecto-chatbot-usach/backend/handlers"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.mongodb.org/mongo-driver/mongo/readpref"
 )
 
-// --- Variables Globales para Clientes ---
-// Ahora necesitamos ambos clientes
+// --- Variables Globales ---
 var (
-	mongoClient *mongo.Client
-	esClient    *elasticsearch.Client // Cliente Elasticsearch
-)
-
-// --- Constantes y Variables de Configuración ---
-var (
+	// variables de entorno
 	mongoURI       string
 	googleAPIKey   string
 	esURL          string
-	dbName         = "investigacion_usach_db" // Nombre BD Mongo
-	collectionName = "notas_investigacion"    // Colección Mongo
-	esIndexName    = "usach_chatbot_vectors"  // Índice ES
+
+	// clientes de MongoDB y Elasticsearch
+	mongoClient *mongo.Client
+	esClient    *elasticsearch.Client 
 )
 
 const (
+	// constantes relativas a MongoDB
+	dbName         = "investigacion_usach_db" // nombre bd 
+	collectionName = "notas_investigacion"    // nombre coleccion bd
+
+	// constantes relativas a Elasticsearch
+	esIndexName    = "usach_chatbot_vectors"  // nombre del indice a buscar
+
+	// constantes relativas a los nombres de las variables de entorno
 	googleApiKeyEnvVar = "GOOGLE_API_KEY"
-	mongoUriEnvVar     = "MONGO_URI" // Usaremos esta para la URI local de Mongo
-	esURLEnvVar        = "ES_URL"
+	mongoUriEnvVar     = "MONGO_URI" 
+	esURLEnvVar        = 	"ES_URL"
 )
 
+// -- Funcion init --
 func init() {
-	// --- Cargar Configuración ---
+	// obtencion de variables de entorno 
 	mongoURI = os.Getenv(mongoUriEnvVar)
 	if mongoURI == "" {
 		log.Printf("WARN: Environment variable %s not set. Defaulting to mongodb://localhost:27017\n", mongoUriEnvVar)
@@ -57,7 +60,14 @@ func init() {
 	}
 	log.Println("Configuration loaded.")
 
-	// --- Conectar a MongoDB Local ---
+	esURL = os.Getenv(esURLEnvVar)
+	if esURL == "" {
+		log.Printf("WARN: Environment variable %s not set.", esURL)
+	} else {
+		log.Println("Local ES found from environment variable.")
+	}
+
+	// conexion a MongoDB
 	log.Println("Connecting to local MongoDB...")
 	mongoCtx, mongoCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer mongoCancel()
@@ -72,16 +82,9 @@ func init() {
 	mongoClient = client // Guardar cliente Mongo local
 	log.Println("Successfully connected and pinged local MongoDB!")
 
-	// --- Conectar a Elasticsearch Local ---
+	// --- Conexion a Elasticsearch ---
 
 	log.Println("Connecting to local Elasticsearch...")
-
-	esURL = os.Getenv(esURLEnvVar)
-	if esURL == "" {
-		log.Printf("WARN: Environment variable %s not set.", esURL)
-	} else {
-		log.Println("Local ES found from environment variable.")
-	}
 
 	esCfg := elasticsearch.Config{
 		Addresses: []string{esURL},
@@ -104,13 +107,22 @@ func init() {
 
 }
 
+// -- Funcion main --
 func main() {
 	log.Println("Starting API server using local Mongo+ES backend...")
 
-	// --- Configurar Router Gin ---
+	// obtencion de variable de entorno PORT
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8000"
+	}
+
+	// configuracion gin
 	router := gin.Default()
-	router.Use(cors.New(cors.Config{ // Misma config CORS
-		AllowOrigins:     []string{"http://localhost:8080", "http://localhost:5173", "http://localhost:80", "http://localhost"},
+
+	// configuracion cors
+	router.Use(cors.New(cors.Config{ 
+		AllowOrigins:     []string{"http://localhost:8080", "http://localhost:5173", "http://localhost:80", "http://localhost", "http://localhost:3000"},
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Length", "Content-Type", "Authorization"},
 		ExposeHeaders:    []string{"Content-Length"},
@@ -118,10 +130,9 @@ func main() {
 		MaxAge:           12 * time.Hour,
 	}))
 
-	// --- Definir Rutas API ---
+	// definicion de la ruta 
 	api := router.Group("/api")
 	{
-		// Pasar AMBOS clientes y nombres necesarios al handler
 		chatHandler := handlers.NewChatHandler(mongoClient, esClient, dbName, collectionName, esIndexName, googleAPIKey)
 		api.POST("/chat", chatHandler.HandleChatRequest)
 	}
@@ -130,11 +141,7 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"message": "pong"})
 	})
 
-	// --- Iniciar Servidor ---
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8000"
-	}
+
 	log.Printf("Server listening on port %s\n", port)
 	err := router.Run(":" + port)
 	if err != nil {

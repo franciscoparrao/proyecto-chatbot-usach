@@ -59,7 +59,6 @@ services:
       - backend
     environment:
       - VUE_APP_BACKEND_URL=http://backend:8000/api/chat
-
 volumes:
   proyecto-chatbot-usach_es_data:
     external: true

@@ -8,17 +8,17 @@ import (
 	"time"
 
 	"github.com/gocolly/colly/v2"
-	// No necesitamos goquery aquí ya que ChildText funcionará si el contexto es correcto
 )
 
-type ScrapedArticle struct {
-	URL     string `json:"url"`
-	Title   string `json:"title"`
-	RawText string `json:"raw_text"`
+type Article struct {
+	Title           string `json:"title"`
+	Authors         string `json:"authors"`
+	PublicationDate string `json:"publication_date"`
+	RawText         string `json:"raw_text"`
 }
 
 func main() {
-	var articles []ScrapedArticle
+	var articles []Article
 
 	c := colly.NewCollector(
 		colly.AllowedDomains("usach.cl", "www.usach.cl"),
@@ -46,6 +46,14 @@ func main() {
 	// *** CAMBIO CLAVE: Usamos el BODY específico de páginas de artículo como contexto ***
 	c.OnHTML("body.page-node-type-article", func(e *colly.HTMLElement) {
 		log.Printf("DEBUG: Processing article page %s using body context\n", e.Request.URL.String())
+
+		// fecha
+		articleDate := strings.TrimSpace(e.ChildText("time.datetime"))
+		log.Printf("DEBUG: Date found: '%s'\n", articleDate)
+
+		// autor
+		articleAuthor := strings.TrimSpace(e.ChildText(".field--name-field-autor a"))
+		log.Printf("DEBUG: Author found: '%s'\n", articleAuthor)
 
 		// --- TÍTULO ---
 		// Usamos el selector más preciso confirmado por el debug, relativo al body
@@ -80,20 +88,15 @@ func main() {
 
 		// --- Guardado ---
 		if articleTitle != "" && articleText != "" {
-			article := ScrapedArticle{
-				URL:     e.Request.URL.String(),
-				Title:   articleTitle,
-				RawText: articleText,
+			article := Article{
+				Title:           articleTitle,
+				Authors:         articleAuthor,
+				PublicationDate: articleDate,
+				RawText:         articleText,
 			}
-			log.Printf("SUCCESS: Scraped: '%s' from %s\n", article.Title, article.URL)
+			log.Printf("SUCCESS: Scraped: '%s' from %s\n", article.Title)
 			// Evitar duplicados
 			found := false
-			for _, existing := range articles {
-				if existing.URL == article.URL {
-					found = true
-					break
-				}
-			}
 			if !found {
 				articles = append(articles, article)
 			}
@@ -147,7 +150,7 @@ func main() {
 
 	// --- Guardar Resultados en JSON ---
 	if len(articles) > 0 {
-		outputFileName := "scraped_articles.json"
+		outputFileName := "../processor/files/scraped_articles_usach.json"
 		log.Printf("Writing results to %s...\n", outputFileName)
 		jsonData, err := json.MarshalIndent(articles, "", "  ")
 		if err != nil {
@@ -162,6 +165,3 @@ func main() {
 		log.Println("No articles were scraped successfully. No output file generated.")
 	}
 }
-
-// Helper func ya no es necesaria
-// func min(a, b int) int { ... }

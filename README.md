@@ -86,6 +86,9 @@ Si no, en consola escribir export GOOGLE_API_KEY=tu_clave_de_api_google_ai, expo
 
 # Cómo subir archivos a Elasticsearch
 
+// ESTO SE DEBE CAMBIAR SI O SI PARA PODER AJUSTAR EL NOMBRE DE LOS CAMPOS, OSEA AÑADIR TITULO, AUTORES, FECHA DE PUBLICACION,
+// EL CHUNK Y EL EMBEDDING VECTOR
+
 1.- correr el siguiente comando: curl -X PUT "http://localhost:9200/usach_chatbot_vectors" -H 'Content-Type: application/json' -d'
 {
   "mappings": {
@@ -102,8 +105,11 @@ Si no, en consola escribir export GOOGLE_API_KEY=tu_clave_de_api_google_ai, expo
       "OriginalTitle": {        
          "type": "text"         
       },
-       "OriginalURL": {
-         "type": "keyword"
+      "OriginalAuthors": {        
+         "type": "text"         
+      },
+      "OriginalPublicationDate": {        
+         "type": "text"         
       }
     }
   }

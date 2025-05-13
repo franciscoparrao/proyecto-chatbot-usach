@@ -11,25 +11,30 @@ import (
 	"strings"
 	"time"
 
-	"github.com/elastic/go-elasticsearch/v8" // Importar cliente ES
+	"github.com/elastic/go-elasticsearch/v8" 
 	"github.com/gin-gonic/gin"
 	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive" // Para convertir IDs
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 // --- Constantes ---
 const (
+	// Constantes relativas a la configuración de Gemini
 	embeddingModel    = "models/text-embedding-004"
-	llmModel          = "models/gemini-1.5-flash-latest" // O el modelo que elegiste
+	llmModel          = "models/gemini-1.5-flash-latest" 
 	googleApiEndpoint = "https://generativelanguage.googleapis.com/v1beta/"
-	// vectorIndexName -> Ahora se pasa al handler
-	numCandidates = 100 // num_candidates para k-NN en ES
-	numResults    = 3   // Cuántos resultados finales queremos
+
+	// Constantes relativas a la búsqueda
+	numCandidates = 100 // numero de candidatos a recuperar de Elasticsearch
+	numResults    = 3   // numero de candidatos a seleccionar de la cantidad de candidatos
 )
 
-// --- Estructuras API Chat ---
+
+// --- Estructuras ---
+
+// -- Estructuras para la API de Chat --
 type ChatRequest struct {
 	Query string `json:"query" binding:"required"`
 }
@@ -37,8 +42,6 @@ type ChatResponse struct {
 	Response      string   `json:"response"`
 	RetrievedDocs []string `json:"retrieved_docs,omitempty"`
 }
-
-// --- Estructuras Google Embedding --- (Sin cambios)
 type GoogleApiEmbeddingRequest struct {
 	Content struct {
 		Parts []struct {
@@ -52,8 +55,6 @@ type GoogleApiEmbeddingResponse struct {
 	} `json:"embedding"`
 }
 
-// --- Estructuras Google Gemini API --- (Sin cambios)
-// --- Estructuras Google Gemini API ---
 type GeminiApiRequest struct {
 	Contents         []GeminiContent        `json:"contents"` // <--- AÑADE O CORRIGE ESTA ETIQUETA
 	SafetySettings   []GeminiSafetySetting  `json:"safetySettings,omitempty"`
@@ -89,7 +90,6 @@ type GeminiApiResponse struct {
 }
 
 // --- Estructura para Resultados de Elasticsearch ---
-// Ajustada para la respuesta de ES Search API
 type EsHit struct {
 	ID     string          `json:"_id"` // ID del documento en ES (será el MongoDocID)
 	Score  float64         `json:"_score"`
@@ -105,30 +105,38 @@ type EsSearchResponse struct {
 	} `json:"hits"`
 }
 
+// --- Estructura para Resultados de MongoDB ---
+
+// ESTO SE DEBE CAMBIAR SI O SI PARA PODER AJUSTAR EL NOMBRE DE LOS CAMPOS
+
+// ESTO SE DEBE CAMBIAR SI O SI PARA PODER AJUSTAR EL NOMBRE DE LOS CAMPOS, OSEA AÑADIR TITULO, AUTORES, FECHA DE PUBLICACION,
+
+type MongoResult struct {
+	ID            primitive.ObjectID `bson:"_id"`
+	OriginalTitle           string `bson:"originaltitle"`
+	OriginalAuthors         string `bson:"originalauthors"`
+	OriginalPublicationDate string `bson:"originalpublicationdate"`
+	ChunkText     string             `bson:"chunktext"`
+}
+
+// --- ChatHandler ---
+type ChatHandler struct {
+	mongoClient    *mongo.Client
+	esClient       *elasticsearch.Client 
+	dbName         string
+	collectionName string
+	esIndexName    string 
+	googleAPIKey   string
+}
+
+/*
 // Struct auxiliar para extraer metadatos del _source de ES si los incluimos
+// NO SE ESTA USANDO!!
 type EsSourceData struct {
 	OriginalTitle string `json:"OriginalTitle"`
 	OriginalURL   string `json:"OriginalURL"`
 }
-
-// --- Estructura para Resultados de MongoDB ---
-// Usaremos esta para recuperar el texto basado en el ID
-type MongoResult struct {
-	ID            primitive.ObjectID `bson:"_id"`
-	ChunkText     string             `bson:"chunktext"`
-	OriginalTitle string             `bson:"originaltitle"` // Nombres en minúscula como probablemente se guardaron
-}
-
-// --- ChatHandler ---
-// Modificado para incluir cliente ES y nombre de índice ES
-type ChatHandler struct {
-	mongoClient    *mongo.Client
-	esClient       *elasticsearch.Client // Añadido cliente ES
-	dbName         string
-	collectionName string
-	esIndexName    string // Añadido nombre índice ES
-	googleAPIKey   string
-}
+*/
 
 // NewChatHandler - Modificado para recibir cliente ES y nombre índice ES
 func NewChatHandler(mongoCli *mongo.Client, esCli *elasticsearch.Client, db string, coll string, esIndex string, apiKey string) *ChatHandler {
@@ -177,7 +185,7 @@ func (h *ChatHandler) HandleChatRequest(c *gin.Context) {
 			"num_candidates": numCandidates,
 		},
 		"_source": false,                                                  // No necesitamos _source aquí, solo _id y _score
-		"fields":  []string{"MongoDocID", "OriginalTitle", "OriginalURL"}, // Pedir campos específicos si están en ES source
+		"fields":  []string{"MongoDocID", "OriginalTitle", "OriginalAuthors", "OriginalPublicationDate"}, // Pedir campos específicos si están en ES source
 		"size":    numResults,                                             // Limitar resultados finales
 	}
 
@@ -294,6 +302,11 @@ func (h *ChatHandler) HandleChatRequest(c *gin.Context) {
 		// Iterar sobre los IDs en el orden que los devolvió ES
 		for _, hitID := range mongoIDs {
 			hexID := hitID.Hex()
+
+			// ESTO SE DEBE CAMBIAR SI O SI PARA PODER AJUSTAR EL NOMBRE DE LOS CAMPOS, OSEA AÑADIR TITULO, AUTORES, FECHA DE PUBLICACION,
+// EL CHUNK Y EL EMBEDDING VECTOR
+
+
 			if mongoDoc, ok := mongoResultsMap[hexID]; ok {
 				if esHit, okEs := esHitsMap[hexID]; okEs {
 					contextFragment := fmt.Sprintf("Fragmento (del artículo: %s):\n%s", mongoDoc.OriginalTitle, mongoDoc.ChunkText)
@@ -479,10 +492,3 @@ func (h *ChatHandler) getLLMCompletion(prompt string) (string, error) {
 	return "", fmt.Errorf("no valid response text found in Gemini API candidates")
 }
 
-// Helper (sin cambios)
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}

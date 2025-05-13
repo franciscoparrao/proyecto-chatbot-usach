@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/joho/godotenv"
+
 	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/elastic/go-elasticsearch/v8/esutil"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -21,42 +23,53 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/readpref"
 )
 
-// --- Constantes y Configuración ---
+// --- Constantes y Configuracion ---
 const (
-	inputFile           = "../scraper/scraped_articles.json"
+	// Constantes relativas al archivo de entrada
+	inputFile = "files/scraped_articles_usach.json"
+
+	// Constantes relativas a los nombres de las variables de entorno
 	mongoLocalURIEnvVar = "MONGO_URI"
 	googleApiKeyEnvVar  = "GOOGLE_API_KEY"
-	esLocalURL          = "http://localhost:9200"
-	dbName              = "investigacion_usach_db"
-	collectionName      = "notas_investigacion"
-	esIndexName         = "usach_chatbot_vectors"
-	embeddingModel      = "models/text-embedding-004"
-	googleApiEndpoint   = "https://generativelanguage.googleapis.com/v1beta/"
-	minChunkLength      = 50
-	rateLimitDelay      = 1 * time.Second
-	bulkIndexerWorkers  = 4
-	bulkIndexerSize     = 100
+
+	// Constantes relativas a ES
+	esLocalURL  = "http://localhost:9200"
+	esIndexName = "usach_chatbot_vectors"
+
+	// Constantes relativas a Mongo
+	dbName         = "investigacion_usach_db"
+	collectionName = "notas_investigacion"
+
+	// Constantes relativas a la configuracion de Gemini
+	embeddingModel     = "models/text-embedding-004"
+	googleApiEndpoint  = "https://generativelanguage.googleapis.com/v1beta/"
+	minChunkLength     = 50
+	rateLimitDelay     = 1 * time.Second
+	bulkIndexerWorkers = 4
+	bulkIndexerSize    = 100
 )
 
 // --- Estructuras ---
-
 type ScrapedArticle struct {
-	URL     string `json:"url"`
-	Title   string `json:"title"`
-	RawText string `json:"raw_text"`
+	Title           string `json:"title"`
+	Authors         string `json:"authors"`
+	PublicationDate string `json:"publication_date"`
+	RawText         string `json:"raw_text"`
 }
 
 type MongoDocument struct {
-	OriginalURL   string `bson:"originalurl"`
-	OriginalTitle string `bson:"originaltitle"`
-	ChunkText     string `bson:"chunktext"`
+	OriginalTitle           string `bson:"originaltitle"`
+	OriginalAuthors         string `bson:"originalauthors"`
+	OriginalPublicationDate string `bson:"originalpublicationdate"`
+	ChunkText               string `bson:"chunktext"`
 }
 
 type ElasticsearchDocument struct {
-	MongoDocID      string    `json:"MongoDocID"`
-	EmbeddingVector []float32 `json:"EmbeddingVector"`
-	OriginalTitle   string    `json:"OriginalTitle,omitempty"`
-	OriginalURL     string    `json:"OriginalURL,omitempty"`
+	MongoDocID              string    `json:"MongoDocID"`
+	EmbeddingVector         []float32 `json:"EmbeddingVector"`
+	OriginalTitle           string    `json:"OriginalTitle,omitempty"`
+	OriginalAuthors         string    `json:"OriginalAuthors,omitempty"`
+	OriginalPublicationDate string    `json:"OriginalPublicationDate,omitempty"`
 }
 
 type GoogleApiEmbeddingRequest struct {
@@ -73,7 +86,6 @@ type GoogleApiEmbeddingResponse struct {
 }
 
 // --- Funciones ---
-
 func getEmbedding(text string, apiKey string) ([]float32, error) {
 	apiURL := googleApiEndpoint + embeddingModel + ":embedContent?key=" + apiKey
 	reqBody := GoogleApiEmbeddingRequest{}
@@ -119,9 +131,13 @@ func getEmbedding(text string, apiKey string) ([]float32, error) {
 	return apiResp.Embedding.Values, nil
 }
 
-// --- Función Principal ---
+// --- Funcion Principal ---
 func main() {
-	log.Println("Starting Full Pipeline Script (Scraped -> Chunk -> Embed -> Mongo+ES)...")
+	// obtencion de variables de entorno
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatalf("FATAL: Error loading .env file: %v\n", err)
+	}
 
 	mongoURI := os.Getenv(mongoLocalURIEnvVar)
 	if mongoURI == "" {
@@ -130,11 +146,14 @@ func main() {
 	} else {
 		log.Println("Local MongoDB URI found from environment variable.")
 	}
+
 	googleAPIKey := os.Getenv(googleApiKeyEnvVar)
 	if googleAPIKey == "" {
 		log.Fatalf("FATAL: Environment variable %s not set.", googleApiKeyEnvVar)
 	}
 	log.Println("Google AI API Key found.")
+
+	// lectura del archivo
 
 	log.Printf("Reading scraper output file: %s\n", inputFile)
 	jsonData, err := os.ReadFile(inputFile)
@@ -151,6 +170,8 @@ func main() {
 		log.Println("No articles to process. Exiting.")
 		return
 	}
+
+	// conexion a mongo
 
 	log.Println("Connecting to local MongoDB...")
 	mongoCtx, mongoCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -177,6 +198,7 @@ func main() {
 	collection := mongoClient.Database(dbName).Collection(collectionName)
 	log.Printf("Using MongoDB database '%s' and collection '%s'\n", dbName, collectionName)
 
+	// conexion a es
 	log.Println("Connecting to local Elasticsearch...")
 	esCfg := elasticsearch.Config{Addresses: []string{esLocalURL}}
 	esClient, err := elasticsearch.NewClient(esCfg)
@@ -208,6 +230,9 @@ func main() {
 		}
 	}()
 
+	// procesamiento de articulos
+	// lectura -> embedding -> mongo -> es
+
 	var countSuccess uint64
 	var countError uint64
 	totalChunksProcessed := 0
@@ -218,6 +243,7 @@ func main() {
 
 		cleanedText := strings.TrimSpace(article.RawText)
 		if cleanedText == "" {
+			log.Printf("	ERROR: Empty text for article %d. Skipping.\n", articleIdx+1)
 			continue
 		}
 
@@ -230,7 +256,7 @@ func main() {
 				totalChunksProcessed++
 				log.Printf("    Chunk %d: Processing (Length: %d)...\n", chunkIdx+1, len(chunkText))
 
-				// A. Embedding
+				// obtencion de embedding para el chunk del articulo leido
 				log.Println("      Getting embedding...")
 				vector, errEmbed := getEmbedding(chunkText, googleAPIKey)
 				if errEmbed != nil {
@@ -242,12 +268,13 @@ func main() {
 				log.Printf("      Embedding obtained (Vector size: %d)\n", len(vector))
 				time.Sleep(rateLimitDelay)
 
-				// B. Inserción en MongoDB
+				// insercion en mongo del documento
 				log.Println("      Inserting text into MongoDB...")
 				mongoDoc := MongoDocument{
-					OriginalURL:   article.URL,   // Usar article.URL
-					OriginalTitle: article.Title, // Usar article.Title
-					ChunkText:     chunkText,
+					OriginalTitle:           article.Title,
+					OriginalAuthors:         article.Authors,
+					OriginalPublicationDate: article.PublicationDate,
+					ChunkText:               chunkText,
 				}
 				insertCtx, insertMongoCancel := context.WithTimeout(context.Background(), 5*time.Second)
 				resMongo, errMongo := collection.InsertOne(insertCtx, mongoDoc)
@@ -261,14 +288,14 @@ func main() {
 				mongoIDString := mongoID.Hex()
 				log.Printf("      Inserted into MongoDB with ID: %s\n", mongoIDString)
 
-				// C. Indexación en Elasticsearch
+				// indexacion en mongo del documento
 				log.Println("      Adding vector to Elasticsearch bulk indexer...")
 				esDoc := ElasticsearchDocument{
-					MongoDocID:      mongoIDString,
-					EmbeddingVector: vector,
-					// *** CORRECCIÓN AQUÍ: Usar article.Title y article.URL ***
-					OriginalTitle: article.Title,
-					OriginalURL:   article.URL,
+					MongoDocID:              mongoIDString,
+					EmbeddingVector:         vector,
+					OriginalTitle:           article.Title,
+					OriginalAuthors:         article.Authors,
+					OriginalPublicationDate: article.PublicationDate,
 				}
 				data, errJson := json.Marshal(esDoc)
 				if errJson != nil {
