@@ -40,7 +40,8 @@
   
   // --- Backend API URL ---
   console.log("backend:", process.env.VUE_APP_BACKEND_URL)
-  const backendUrl = process.env.VUE_APP_BACKEND_URL; // URL from environment variables  
+  // Usar una URL fija si la variable de entorno no está definida
+  const backendUrl = process.env.VUE_APP_BACKEND_URL || 'http://localhost:8000/api/chat'; // URL from environment variables
   
 // --- Functions ---
   const scrollToBottom = async () => {

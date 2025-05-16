@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/elastic/go-elasticsearch/v8" 
+	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/gin-gonic/gin"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -23,14 +23,13 @@ import (
 const (
 	// Constantes relativas a la configuración de Gemini
 	embeddingModel    = "models/text-embedding-004"
-	llmModel          = "models/gemini-1.5-flash-latest" 
+	llmModel          = "models/gemini-1.5-flash-latest"
 	googleApiEndpoint = "https://generativelanguage.googleapis.com/v1beta/"
 
 	// Constantes relativas a la búsqueda
 	numCandidates = 100 // numero de candidatos a recuperar de Elasticsearch
 	numResults    = 3   // numero de candidatos a seleccionar de la cantidad de candidatos
 )
-
 
 // --- Estructuras ---
 
@@ -112,20 +111,20 @@ type EsSearchResponse struct {
 // ESTO SE DEBE CAMBIAR SI O SI PARA PODER AJUSTAR EL NOMBRE DE LOS CAMPOS, OSEA AÑADIR TITULO, AUTORES, FECHA DE PUBLICACION,
 
 type MongoResult struct {
-	ID            primitive.ObjectID `bson:"_id"`
-	OriginalTitle           string `bson:"originaltitle"`
-	OriginalAuthors         string `bson:"originalauthors"`
-	OriginalPublicationDate string `bson:"originalpublicationdate"`
-	ChunkText     string             `bson:"chunktext"`
+	ID                      primitive.ObjectID `bson:"_id"`
+	OriginalTitle           string             `bson:"originaltitle"`
+	OriginalAuthors         string             `bson:"originalauthors"`
+	OriginalPublicationDate string             `bson:"originalpublicationdate"`
+	ChunkText               string             `bson:"chunktext"`
 }
 
 // --- ChatHandler ---
 type ChatHandler struct {
 	mongoClient    *mongo.Client
-	esClient       *elasticsearch.Client 
+	esClient       *elasticsearch.Client
 	dbName         string
 	collectionName string
-	esIndexName    string 
+	esIndexName    string
 	googleAPIKey   string
 }
 
@@ -184,9 +183,9 @@ func (h *ChatHandler) HandleChatRequest(c *gin.Context) {
 			"k":              numCandidates, // k > numResults
 			"num_candidates": numCandidates,
 		},
-		"_source": false,                                                  // No necesitamos _source aquí, solo _id y _score
+		"_source": false,                                                                                 // No necesitamos _source aquí, solo _id y _score
 		"fields":  []string{"MongoDocID", "OriginalTitle", "OriginalAuthors", "OriginalPublicationDate"}, // Pedir campos específicos si están en ES source
-		"size":    numResults,                                             // Limitar resultados finales
+		"size":    numResults,                                                                            // Limitar resultados finales
 	}
 
 	// Si no incluiste metadatos en ES, usa _source: false y pide solo score
@@ -304,8 +303,7 @@ func (h *ChatHandler) HandleChatRequest(c *gin.Context) {
 			hexID := hitID.Hex()
 
 			// ESTO SE DEBE CAMBIAR SI O SI PARA PODER AJUSTAR EL NOMBRE DE LOS CAMPOS, OSEA AÑADIR TITULO, AUTORES, FECHA DE PUBLICACION,
-// EL CHUNK Y EL EMBEDDING VECTOR
-
+			// EL CHUNK Y EL EMBEDDING VECTOR
 
 			if mongoDoc, ok := mongoResultsMap[hexID]; ok {
 				if esHit, okEs := esHitsMap[hexID]; okEs {
@@ -332,14 +330,28 @@ func (h *ChatHandler) HandleChatRequest(c *gin.Context) {
 	contextString := contextBuilder.String()
 	log.Printf("Retrieved Context for LLM:\n%s\n", contextString) // Loguear contexto final
 
-	prompt := fmt.Sprintf(`Eres un asistente virtual experto exclusivamente en la investigación realizada en la Universidad de Santiago, basado en notas de prensa internas. Tu tarea es responder la pregunta del usuario utilizando ÚNICA Y EXCLUSIVAMENTE la información proporcionada en el siguiente contexto. No añadas información externa, opiniones personales ni datos que no estén explícitamente en el contexto. Si la respuesta a la pregunta no se encuentra en el contexto, indica claramente que no tienes información sobre ese tema específico en la documentación proporcionada. Sé conciso y directo.
+	prompt := fmt.Sprintf(`Eres "InvestigaUSACH", un asistente virtual especializado y entusiasta. Tu misión es iluminar los avances y descubrimientos en investigación de la Universidad de Santiago de Chile, incluyendo su alineación con los Objetivos de Desarrollo Sostenible (ODS) de la ONU. Tu conocimiento se basa EXCLUSIVAMENTE en el contexto de noticias (principalmente en español), artículos científicos y documentos de investigación (que pueden estar en inglés) proporcionados a continuación.
 
+**Tu Tarea Principal:**
+Responde a la pregunta del usuario ***SIEMPRE EN ESPAÑOL***, de forma clara, detallada y con un tono periodístico atractivo y accesible para una audiencia universitaria amplia. Si el contexto proporcionado está en inglés, debes interpretarlo y sintetizar la información para generar tu respuesta en español fluido y natural. Sintetiza la información del contexto si es necesario para dar una respuesta completa y coherente, extrayendo los detalles más significativos.
+
+**Al Responder, Considera:**
+1.  **Basado en Contexto e Idioma:** Utiliza ÚNICA Y EXCLUSIVAMENTE la información del contexto proporcionado, **independientemente del idioma original del contexto (inglés o español)**. Tu respuesta final DEBE SER EN ESPAÑOL. No inventes detalles, no uses conocimiento externo ni des opiniones personales. Si la información proviene de un artículo o paper específico mencionado en el contexto, intenta referenciarlo brevemente (ej. 'Según el estudio sobre X...', 'En la publicación sobre Y...').
+2.  **Detalle y Profundidad (Cross-lingual):** Si el contexto lo permite (incluso si está en inglés), ofrece detalles interesantes en español, explica conceptos clave brevemente y conecta la información de diferentes fragmentos si es relevante para la pregunta. Busca elaborar la respuesta de forma informativa y completa en español.
+3.  **Tono:** Adopta un tono informativo pero a la vez "seductor" y motivante, como si estuvieras presentando un hallazgo importante en una revista de divulgación científica o un portal de noticias universitarias. Destaca la relevancia o el impacto de la investigación cuando sea posible. Sé transversal y evita la jerga excesivamente técnica (o explícala si es inevitable y viene del contexto) en tu respuesta en español.
+4.  **Estimular Diálogo:** Siempre que sea posible y natural, después de responder, finaliza con una pregunta abierta relacionada (en español) que invite al usuario a profundizar o explorar un aspecto conectado. Por ejemplo: "¿Te gustaría que detallemos la metodología utilizada en [tema X]?", "¿Hay algún otro investigador o área de este estudio sobre la que quisieras más información?" o "¿Podemos explorar otra investigación relacionada?".
+5.  **Contexto Insuficiente o Idioma No Relevante:**
+    * Si el contexto proporcionado (en cualquier idioma) no contiene información para responder la pregunta del usuario (hecha en español), indica de forma amable y clara que no tienes detalles sobre ese tema específico en los documentos actuales. Por ejemplo: "No he encontrado información específica sobre '%s' en las noticias y documentos de investigación que tengo disponibles en este momento. ¿Quizás podría ayudarte con otro tema de investigación de la USACH?".
+    * No intentes responder si la información no está claramente presente.
+
+**--- INICIO DEL CONTEXTO PROPORCIONADO (Puede estar en español o inglés) ---**
+%s 
+**--- FIN DEL CONTEXTO PROPORCIONADO ---**
+
+**Pregunta del usuario (en español):**
 %s
 
-Pregunta del usuario:
-%s
-
-Respuesta:`, contextString, request.Query)
+**InvestigaUSACH Responde (EN ESPAÑOL):**`, request.Query, contextString, request.Query) // request.Query dos veces, uno para el mensaje "no encontré sobre X"
 
 	log.Println("Constructed Prompt for LLM.")
 
@@ -491,4 +503,3 @@ func (h *ChatHandler) getLLMCompletion(prompt string) (string, error) {
 	log.Printf("WARN: Gemini response was empty or structure was unexpected. Full response: %s", string(respBodyBytes))
 	return "", fmt.Errorf("no valid response text found in Gemini API candidates")
 }
-

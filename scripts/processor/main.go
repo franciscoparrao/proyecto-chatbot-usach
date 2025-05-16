@@ -26,19 +26,19 @@ import (
 // --- Constantes y Configuracion ---
 const (
 	// Constantes relativas al archivo de entrada
-	inputFile = "files/scraped_articles_usach.json"
+	inputFile = "files/scraped_articles_wos.json"
 
 	// Constantes relativas a los nombres de las variables de entorno
 	mongoLocalURIEnvVar = "MONGO_URI"
 	googleApiKeyEnvVar  = "GOOGLE_API_KEY"
 
 	// Constantes relativas a ES
-	esLocalURL  = "http://localhost:9200"
-	esIndexName = "usach_chatbot_vectors"
+	esLocalURL  = "http://localhost:9201" // Actualizado para usar el puerto mapeado
+	esIndexName = "usach_chatbot_vectors_wos" // Índice diferente para datos WoS
 
 	// Constantes relativas a Mongo
 	dbName         = "investigacion_usach_db"
-	collectionName = "notas_investigacion"
+	collectionName = "articulos_wos" // Colección separada para WoS
 
 	// Constantes relativas a la configuracion de Gemini
 	embeddingModel     = "models/text-embedding-004"
@@ -141,8 +141,8 @@ func main() {
 
 	mongoURI := os.Getenv(mongoLocalURIEnvVar)
 	if mongoURI == "" {
-		log.Printf("WARN: Environment variable %s not set. Defaulting to mongodb://localhost:27017\n", mongoLocalURIEnvVar)
-		mongoURI = "mongodb://localhost:27017"
+		log.Printf("WARN: Environment variable %s not set. Defaulting to mongodb://localhost:27019\n", mongoLocalURIEnvVar)
+		mongoURI = "mongodb://localhost:27019"
 	} else {
 		log.Println("Local MongoDB URI found from environment variable.")
 	}

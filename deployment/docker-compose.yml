@@ -1,23 +1,23 @@
 services:
   mongo:
     image: mongo:4.4 # Puedes cambiar a una versión 5.x o 6.x si prefieres, pero sin Vector Search nativo
-    container_name: mongo_chatbot
+    container_name: mongo_chatbot_v1
     ports:
-      - "27018:27017" # Mapea el puerto estándar de Mongo a tu localhost
+      - "27019:27017" # Mapea el puerto estándar de Mongo a tu localhost
     volumes:
       - proyecto-chatbot-usach_mongo_data:/data/db # Crea un volumen para persistir los datos de Mongo
     restart: unless-stopped
 
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.13.2 # Usa una versión 7.3+ u 8.x reciente
-    container_name: elasticsearch_chatbot
+    container_name: elasticsearch_chatbot_v1
     environment:
       - discovery.type=single-node # Necesario para correr un solo nodo en desarrollo
       - xpack.security.enabled=false # DESHABILITA seguridad para pruebas locales fáciles (¡NO HACER EN PRODUCCIÓN!)
       - "ES_JAVA_OPTS=-Xms512m -Xmx512m" # Limitar memoria (ajusta según tu máquina)
     ports:
-      - "9200:9200" # Mapea el puerto HTTP de Elasticsearch
-      - "9300:9300" # Mapea el puerto de transporte (menos relevante para HTTP)
+      - "9201:9200" # Mapea el puerto HTTP de Elasticsearch
+      - "9301:9300" # Mapea el puerto de transporte (menos relevante para HTTP)
     volumes:
       - proyecto-chatbot-usach_es_data:/usr/share/elasticsearch/data # Crea un volumen para persistir los datos de ES
     ulimits: # Configuraciones recomendadas por Elasticsearch
@@ -38,9 +38,9 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
-      - MONGO_URI=${MONGO_URI}
-      - ES_URL=${ES_URL}
+      - GOOGLE_API_KEY=AIzaSyBJk6hzIGPaJFoqziiM2m1GgXPH0XBLJc8
+      - MONGO_URI=mongodb://mongo:27017
+      - ES_URL=http://elasticsearch:9200
       - PORT=8000
       - GIN_MODE=release
     depends_on:

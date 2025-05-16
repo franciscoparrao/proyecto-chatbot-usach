@@ -32,10 +32,10 @@ var (
 const (
 	// constantes relativas a MongoDB
 	dbName         = "investigacion_usach_db" // nombre bd 
-	collectionName = "notas_investigacion"    // nombre coleccion bd
+	collectionName = "articulos_wos"          // cambiado a la colección WoS
 
 	// constantes relativas a Elasticsearch
-	esIndexName    = "usach_chatbot_vectors"  // nombre del indice a buscar
+	esIndexName    = "usach_chatbot_vectors_wos"  // cambiado al índice WoS
 
 	// constantes relativas a los nombres de las variables de entorno
 	googleApiKeyEnvVar = "GOOGLE_API_KEY"
