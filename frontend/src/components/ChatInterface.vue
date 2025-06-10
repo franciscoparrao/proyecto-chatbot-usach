@@ -1,12 +1,28 @@
 <template>
     <div class="chat-container">
       <h2>Chat de Investigación USACH (Prototipo)</h2>
+      <div class="search-config">
+        <div class="toggle-container">
+          <label class="switch">
+            <input type="checkbox" v-model="hybridModeEnabled">
+            <span class="slider round"></span>
+          </label>
+          <span class="toggle-label">Modo búsqueda híbrida: {{ hybridModeEnabled ? 'Activado' : 'Desactivado' }}</span>
+        </div>
+      </div>
       <div class="messages-area" ref="messagesAreaRef">
         <div v-for="message in messages" :key="message.id" class="message" :class="message.sender">
           <div class="message-bubble">
             <span v-if="message.sender === 'bot'" class="sender-label">Asistente:</span>
             <span v-if="message.sender === 'user'" class="sender-label">Tú:</span>
             <p class="message-text">{{ message.text }}</p>
+            <!-- Opciones de temas (si existen) -->
+            <div v-if="message.options && message.options.length > 0" class="topic-options">
+              <div v-for="option in message.options" :key="option.label" 
+                   class="topic-option" @click="selectOption(option)">
+                {{ option.label }}
+              </div>
+            </div>
           </div>
         </div>
         <div v-if="isLoading" class="message bot">
@@ -33,15 +49,16 @@
   import axios from 'axios';
   
   // --- Reactive State ---
-  const messages = ref([]); // Array to hold chat messages { id, sender, text }
+  const messages = ref([]); // Array to hold chat messages { id, sender, text, options }
   const userInput = ref(''); // Input field model
   const isLoading = ref(false); // To show loading indicator and disable input/button
   const messagesAreaRef = ref(null); // To scroll down automatically
+  const hybridModeEnabled = ref(true); // Activar búsqueda híbrida por defecto
   
   // --- Backend API URL ---
   console.log("backend:", process.env.VUE_APP_BACKEND_URL)
   // Usar una URL fija si la variable de entorno no está definida
-  const backendUrl = process.env.VUE_APP_BACKEND_URL || 'http://localhost:8000/api/chat'; // URL from environment variables
+  const backendUrl = process.env.VUE_APP_BACKEND_URL || 'http://localhost:8011/api/chat'; // URL from environment variables
   
 // --- Functions ---
   const scrollToBottom = async () => {
@@ -70,19 +87,43 @@
   
     // 2. Set loading state
     isLoading.value = true;
+    
+    // Obtener historial de conversación (últimos 3 intercambios = 6 mensajes)
+    const MAX_HISTORY_TURNS = 3;
+    const historyToSend = messages.value
+      .slice(-MAX_HISTORY_TURNS * 2) // Obtener los últimos N*2 mensajes
+      .map(msg => ({ 
+        role: msg.sender === 'bot' ? 'model' : 'user', 
+        text: msg.text 
+      }));
+    
+    console.log("Sending history:", historyToSend);
   
-    // 3. Call backend API
+    // 3. Call backend API with history
     try {
-      const response = await axios.post(backendUrl, { query: text });
+      const response = await axios.post(backendUrl, { 
+        query: text,
+        history: historyToSend,
+        hybrid_mode: hybridModeEnabled.value // Enviar el estado del modo híbrido
+      });
       
       // Check if response and response.data exist
       if (response && response.data && response.data.response) {
           // 4. Add bot response to chat display
-          messages.value.push({
+          const botMessage = {
               id: Date.now() + Math.random(),
               sender: 'bot',
               text: response.data.response, // Extract text from backend response
-          });
+          };
+          
+          // Add options if available (for clarification_options type)
+          if (response.data.response_type === 'clarification_options' && 
+              response.data.options && response.data.options.length > 0) {
+              botMessage.options = response.data.options;
+              console.log('Received topic options:', response.data.options);
+          }
+          
+          messages.value.push(botMessage);
       } else {
            // Handle unexpected response structure
            console.error('Unexpected response structure:', response);
@@ -115,6 +156,71 @@
     }
   };
   
+  // Function to handle option selection
+  const selectOption = (option) => {
+    if (!option || !option.query_ref) return;
+    
+    // Add user selection as a message
+    const selectionText = `${option.label}`;
+    messages.value.push({
+      id: Date.now() + Math.random(),
+      sender: 'user',
+      text: selectionText,
+    });
+    
+    // Send the selected option as a query
+    isLoading.value = true;
+    
+    // Get conversation history for context
+    const MAX_HISTORY_TURNS = 3;
+    const historyToSend = messages.value
+      .slice(-MAX_HISTORY_TURNS * 2)
+      .map(msg => ({ 
+        role: msg.sender === 'bot' ? 'model' : 'user', 
+        text: msg.text 
+      }));
+    
+    // Send the option's query_ref to the backend WITH explicit option selection indicators
+    axios.post(backendUrl, { 
+      query: option.label,            // Send the label as the query (what user sees)
+      selected_ref: option.query_ref, // Send the reference separately (might be different from label)
+      is_option_reply: true,          // Explicit flag that this is a selection of an offered option
+      intent: "select_option",        // For backward compatibility
+      hybrid_mode: hybridModeEnabled.value, // Enviar el estado del modo híbrido
+      history: historyToSend
+    })
+    .then(response => {
+      if (response && response.data && response.data.response) {
+        const botResponse = {
+          id: Date.now() + Math.random(),
+          sender: 'bot',
+          text: response.data.response,
+        };
+        
+        // Add any options if they exist
+        if (response.data.response_type === 'clarification_options' && 
+            response.data.options && response.data.options.length > 0) {
+            botResponse.options = response.data.options;
+        }
+        
+        messages.value.push(botResponse);
+      }
+    })
+    .catch(error => {
+      console.error('Error sending option selection:', error);
+      const errorMessage = `Error al procesar tu selección: ${error.message}`;
+      messages.value.push({
+        id: Date.now() + Math.random(),
+        sender: 'bot',
+        text: errorMessage,
+      });
+    })
+    .finally(() => {
+      isLoading.value = false;
+      scrollToBottom();
+    });
+  };
+  
   // Optional: Add a welcome message on component mount
   messages.value.push({
       id: Date.now(),
@@ -125,6 +231,110 @@
   </script>
   
   <style scoped>
+  /* Estilos para el interruptor del modo híbrido */
+  .search-config {
+    display: flex;
+    justify-content: center;
+    margin: 5px 0;
+    padding: 5px 0;
+    background-color: #f4f4f4;
+    border-bottom: 1px solid #ccc;
+  }
+
+  .toggle-container {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .toggle-label {
+    font-size: 0.85em;
+    color: #555;
+  }
+
+  /* The switch - the box around the slider */
+  .switch {
+    position: relative;
+    display: inline-block;
+    width: 50px;
+    height: 24px;
+  }
+
+  /* Hide default HTML checkbox */
+  .switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+  }
+
+  /* The slider */
+  .slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: #ccc;
+    transition: .4s;
+  }
+
+  .slider:before {
+    position: absolute;
+    content: "";
+    height: 16px;
+    width: 16px;
+    left: 4px;
+    bottom: 4px;
+    background-color: white;
+    transition: .4s;
+  }
+
+  input:checked + .slider {
+    background-color: #EF7D00;
+  }
+
+  input:focus + .slider {
+    box-shadow: 0 0 1px #EF7D00;
+  }
+
+  input:checked + .slider:before {
+    transform: translateX(26px);
+  }
+
+  /* Rounded sliders */
+  .slider.round {
+    border-radius: 24px;
+  }
+
+  .slider.round:before {
+    border-radius: 50%;
+  }
+  
+  /* Estilos para opciones de temas */
+  .topic-options {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 12px;
+  }
+  
+  .topic-option {
+    background-color: #f8f9fa;
+    border: 1px solid #ddd;
+    border-radius: 16px;
+    padding: 6px 12px;
+    font-size: 0.9em;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    color: #333;
+  }
+  
+  .topic-option:hover {
+    background-color: #EF7D00;
+    color: white;
+    border-color: #EF7D00;
+  }
   .chat-container {
     display: flex;
     flex-direction: column;
