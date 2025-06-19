@@ -336,24 +336,25 @@ func GetLastMessageContent(session Session) string {
 	return session.History[len(session.History)-1].Content
 }
 
-// Función auxiliar para construir el contexto
+// Función auxiliar para construir el contexto completo con usuario y asistente
 func buildContextQuery(history []Message, currentQuery string) string {
 	var contextBuilder strings.Builder
 
-	// Tomar solo los últimos 5 mensajes del usuario para el contexto
-	start := len(history) - 5
+	// Tomar los últimos 6 mensajes (3 intercambios) para el contexto
+	start := len(history) - 6
 	if start < 0 {
 		start = 0
 	}
 
 	for _, msg := range history[start:] {
-		if msg.Role == "user" {
-			contextBuilder.WriteString(msg.Content)
-			contextBuilder.WriteString(". ") // Separador entre mensajes
+		role := "Usuario"
+		if msg.Role == "bot" || msg.Role == "asistente" {
+			role = "Asistente"
 		}
+		contextBuilder.WriteString(fmt.Sprintf("%s: %s\n", role, msg.Content))
 	}
 
-	contextBuilder.WriteString(currentQuery) // Agregar la nueva consulta al final
+	contextBuilder.WriteString(fmt.Sprintf("Usuario: %s", currentQuery)) // Agregar la nueva consulta al final
 	return contextBuilder.String()
 }
 
@@ -925,26 +926,67 @@ func (h *ChatHandler) HandleChatRequest(c *gin.Context) {
 		printSessionFromCookie(session)
 	}
 
+	// Extraer preguntas sugeridas de la respuesta del LLM
+	var suggestedQuestions []ChatOption
+	responseText := llmResponseText
+	
+	// Buscar preguntas al final del texto (después de "¿Te gustaría", "¿Podría", etc.)
+	// Patrón para detectar preguntas sugeridas
+	questionPattern := regexp.MustCompile(`(?i)(?:¿te gustaría|¿podría|¿quieres|¿deseas)[^?]+\?`)
+	matches := questionPattern.FindAllString(llmResponseText, -1)
+	
+	// Si encontramos preguntas sugeridas al final
+	if len(matches) > 0 {
+		// Tomar las últimas preguntas (hasta 3)
+		startIdx := len(matches) - 3
+		if startIdx < 0 {
+			startIdx = 0
+		}
+		
+		for i := startIdx; i < len(matches); i++ {
+			question := strings.TrimSpace(matches[i])
+			// Limpiar la pregunta de caracteres no deseados
+			question = strings.TrimPrefix(question, "o ")
+			question = strings.TrimPrefix(question, "O ")
+			question = strings.TrimPrefix(question, ", ")
+			
+			if len(question) > 10 { // Asegurar que es una pregunta válida
+				suggestedQuestions = append(suggestedQuestions, ChatOption{
+					Label:    question,
+					QueryRef: question,
+				})
+			}
+		}
+		
+		// Si encontramos preguntas, eliminarlas del texto principal
+		if len(suggestedQuestions) > 0 {
+			// Encontrar la posición de la primera pregunta sugerida
+			firstQuestionPos := strings.Index(llmResponseText, matches[startIdx])
+			if firstQuestionPos > 0 {
+				// Cortar el texto antes de las preguntas
+				responseText = strings.TrimSpace(llmResponseText[:firstQuestionPos])
+				// Eliminar posibles conectores al final
+				responseText = strings.TrimSuffix(responseText, ".")
+				responseText = strings.TrimSuffix(responseText, ":")
+				responseText = strings.TrimSpace(responseText) + "."
+			}
+		}
+	}
+
 	responseType := "direct_answer"
-	if len(mongoResults) == 0 && !strings.Contains(llmResponseText, "No he encontrado información específica") { // Una heurística simple
-		// Si no hay resultados de Mongo Y el LLM no dice explícitamente que no encontró,
-		// podría ser una respuesta general o no basada en contexto.
-		// Podríamos marcarlo diferente o simplemente confiar en el LLM.
-		// Por ahora, lo dejamos como direct_answer, pero si no hay mongoResults, el prompt ya instruye al LLM.
-		// Si el LLM responde algo a pesar de no tener contexto, es un fallo del LLM/prompt.
-		// El prompt instruye que diga "No se encontró..." si no hay contexto.
+	if len(mongoResults) == 0 && !strings.Contains(llmResponseText, "No he encontrado información específica") {
 		if !strings.Contains(contextString, "No se encontró contexto relevante") {
 			// Esto es redundante ya que el prompt maneja el caso de no contexto.
 		}
 	}
 	if strings.Contains(contextString, "No se encontró contexto relevante") && !strings.Contains(llmResponseText, "No he encontrado información específica") {
 		log.Println("WARN: LLM generated a response even though context was empty and it didn't state no info found.")
-		// Podríamos forzar un mensaje aquí o confiar en el prompt.
 	}
 
 	finalResponse = ChatResponse{
-		ResponseType:  responseType, // Se podría refinar más si es necesario
-		Response:      llmResponseText,
+		ResponseType:  responseType,
+		Response:      responseText,
+		Options:       suggestedQuestions, // Agregar las preguntas extraídas
 		RetrievedDocs: retrievedDocsForClientResponse,
 	}
 	c.JSON(http.StatusOK, finalResponse)

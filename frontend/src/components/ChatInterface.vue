@@ -133,7 +133,7 @@ const userInput = ref('');
 const isLoading = ref(false);
 const messagesAreaRef = ref(null);
 const hybridModeEnabled = ref(true);
-const backendUrl = process.env.VUE_APP_BACKEND_URL || 'http://localhost:8000/api/chat'; // URL from environment variables
+const backendUrl = process.env.VUE_APP_BACKEND_URL || 'http://localhost:8001/api/chat'; // URL from environment variables
 
 // --- Máquina de escribir ---
 const botTyping = ref(false);
@@ -203,10 +203,8 @@ const sendMessage = async () => {
     });
 
     if (response?.data?.response) {
-      // Si hay opciones, pásalas también
-      const options = (response.data.response_type === 'clarification_options' && response.data.options?.length > 0)
-        ? response.data.options
-        : null;
+      // Si hay opciones, pásalas también (de cualquier tipo de respuesta)
+      const options = response.data.options?.length > 0 ? response.data.options : null;
       await showBotMessageProgressively(response.data.response, options);
     }
   } catch (error) {
@@ -242,9 +240,7 @@ const selectOption = async (option) => {
     });
 
     if (response?.data?.response) {
-      const options = (response.data.response_type === 'clarification_options' && response.data.options?.length > 0)
-        ? response.data.options
-        : null;
+      const options = response.data.options?.length > 0 ? response.data.options : null;
       await showBotMessageProgressively(response.data.response, options);
     }
   } catch (error) {
