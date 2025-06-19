@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/gin-gonic/gin"
@@ -380,26 +381,19 @@ func (h *ChatHandler) rewriteQueryWithHistory(originalQuery string, history []Ch
 		historyStr.WriteString(fmt.Sprintf("%s: %s\n", role, history[i].Text))
 	}
 
-	rewritePrompt := fmt.Sprintf(`Tu tarea es tomar un historial de conversación y la "Última Pregunta del Usuario". Genera una nueva pregunta que sea autónoma y refleje la intención completa y específica del usuario, resolviendo cualquier referencia contextual del historial. La nueva pregunta se usará para buscar información precisa en una base de datos de investigación.
+	rewritePrompt := fmt.Sprintf(`Reescribe la pregunta del usuario incluyendo el contexto necesario del historial.
 
-Consideraciones para la pregunta reescrita:
-- Debe ser una pregunta completa e independiente, formulada como si no hubiera historial previo.
-- CRÍTICO: Si la "Última Pregunta del Usuario" contiene referencias contextuales como "eso", "este tema", "el primer punto", "ese descubrimiento", "lo que mencionaste", DEBES reemplazar esas referencias con el sujeto o concepto específico discutido en los turnos inmediatamente anteriores del Asistente o del Usuario. Por ejemplo, si el Asistente dijo: "Hemos discutido el impacto de los bio-polímeros en la agricultura" y el usuario pregunta: "¿Qué desafíos presenta eso?", la pregunta reescrita DEBE SER: "¿Qué desafíos presenta el impacto de los bio-polímeros en la agricultura?".
-- Si la "Última Pregunta del Usuario" pide más detalles sobre un tema específico mencionado JUSTO ANTES por el Asistente, asegúrate de que la pregunta reescrita incorpore la ESENCIA de ese tema específico.
-- Si la "Última Pregunta del Usuario" introduce un tema claramente nuevo o diferente, la pregunta reescrita debe enfocarse en ese nuevo tema.
-- Si la "Última Pregunta del Usuario" ya es clara, completa y no depende del historial, devuélvela tal cual.
-- La pregunta reescrita debe ser concisa y optimizada para una búsqueda semántica.
-- Responde ÚNICAMENTE con la pregunta reescrita, sin preámbulos ni explicaciones adicionales.
+Ejemplos:
+- "Continúa con lo anterior" → "Continúa explicando sobre [tema específico mencionado]"
+- "Hay otros trabajos?" → "Hay otros trabajos sobre [tema específico]?"
+- "Dime más" → "Dime más sobre [tema específico]"
 
-Historial de la Conversación:
----
-%s
----
-
-Última Pregunta del Usuario:
+Historial (últimos mensajes):
 %s
 
-Pregunta Reescrita Optimizada para Búsqueda:`, historyStr.String(), originalQuery)
+Pregunta actual: %s
+
+Pregunta reescrita (solo la pregunta, sin explicaciones):`, historyStr.String(), originalQuery)
 
 	log.Printf("Calling LLM for query rewriting. History length: %d messages. Original query: %s\n", len(history), originalQuery)
 
@@ -441,7 +435,7 @@ func (h *ChatHandler) synthesizeTopics(query string, mongoResults []MongoResult)
 	var contextForSynthesis strings.Builder
 	titlesForLog := []string{}
 	for idx, doc := range mongoResults {
-		extractLength := 150 // Reducido para evitar MAX_TOKENS
+		extractLength := 100 // Muy reducido para evitar MAX_TOKENS
 		if len(doc.ChunkText) < extractLength {
 			extractLength = len(doc.ChunkText)
 		}
@@ -474,7 +468,7 @@ Subtemas Identificados (1-3 opciones, solo los más relevantes a la pregunta, fo
 
 	synthesisConfig := &GeminiGenerationConfig{
 		Temperature:     0.25,
-		MaxOutputTokens: 300, // Reducido para evitar MAX_TOKENS
+		MaxOutputTokens: 200, // Muy reducido para evitar MAX_TOKENS
 		TopP:            0.95,
 	}
 
@@ -966,17 +960,22 @@ func (h *ChatHandler) HandleChatRequest(c *gin.Context) {
 	responseText := llmResponseText
 	
 	// Buscar preguntas sugeridas en el texto
-	// Primero buscar si hay un párrafo final que contenga preguntas
-	lastParagraphIdx := strings.LastIndex(llmResponseText, "\n\n")
-	if lastParagraphIdx > 0 {
-		lastParagraph := llmResponseText[lastParagraphIdx:]
+	// Buscar todas las preguntas que empiecen con ¿
+	questionPattern := regexp.MustCompile(`¿[^?]+\?`)
+	allMatches := questionPattern.FindAllString(llmResponseText, -1)
+	
+	// Si hay preguntas, tomar las últimas 3
+	if len(allMatches) >= 3 {
+		// Tomar las últimas 3 preguntas
+		startIdx := len(allMatches) - 3
+		matches := allMatches[startIdx:]
 		
-		// Patrón para detectar preguntas sugeridas
-		questionPattern := regexp.MustCompile(`(?i)(?:¿[^?]+\?)`)
-		matches := questionPattern.FindAllString(lastParagraph, -1)
+		log.Printf("Found %d questions in response, taking last 3", len(allMatches))
 		
-		// Si el último párrafo contiene preguntas sugeridas
-		if len(matches) > 0 {
+		// Encontrar dónde empieza la primera de las últimas 3 preguntas
+		firstQuestionPos := strings.Index(llmResponseText, matches[0])
+		
+		if firstQuestionPos > 0 {
 			// Extraer hasta 3 preguntas
 			for i, match := range matches {
 				if i >= 3 {
@@ -991,47 +990,51 @@ func (h *ChatHandler) HandleChatRequest(c *gin.Context) {
 				question = strings.TrimPrefix(question, ", ")
 				
 				if len(question) > 10 {
-					// Extraer solo el contenido específico de la pregunta
-					// Por ejemplo: "¿Te gustaría que detallemos la metodología de X?" → "Detallar la metodología de X"
-					if strings.Contains(strings.ToLower(question), "¿te gustaría") {
-						// Convertir a afirmación
-						simplified := strings.ReplaceAll(strings.ToLower(question), "¿te gustaría que ", "")
-						simplified = strings.ReplaceAll(simplified, "¿te gustaría ", "")
-						simplified = strings.TrimSuffix(simplified, "?")
-						// Capitalizar primera letra
-						if len(simplified) > 0 {
-							simplified = strings.ToUpper(simplified[:1]) + simplified[1:]
-						}
-						suggestedQuestions = append(suggestedQuestions, ChatOption{
-							Label:    simplified,
-							QueryRef: question,
-						})
-					} else if strings.Contains(strings.ToLower(question), "¿quieres") || strings.Contains(strings.ToLower(question), "¿deseas") {
-						// Similar para otras formas
-						simplified := question
-						simplified = strings.ReplaceAll(strings.ToLower(simplified), "¿quieres ", "")
-						simplified = strings.ReplaceAll(simplified, "¿deseas ", "")
-						simplified = strings.TrimSuffix(simplified, "?")
-						if len(simplified) > 0 {
-							simplified = strings.ToUpper(simplified[:1]) + simplified[1:]
-						}
-						suggestedQuestions = append(suggestedQuestions, ChatOption{
-							Label:    simplified,
-							QueryRef: question,
-						})
-					} else {
-						// Si es una pregunta directa, usarla tal cual
-						suggestedQuestions = append(suggestedQuestions, ChatOption{
-							Label:    question,
-							QueryRef: question,
-						})
+					// Simplificar la pregunta para mostrar como opción
+					simplified := question
+					
+					// Remover prefijos comunes
+					prefixes := []string{
+						"¿Te gustaría que ", "¿Te gustaría ",
+						"¿Quieres que ", "¿Quieres ",
+						"¿Deseas que ", "¿Deseas ",
+						"¿Quisieras que ", "¿Quisieras ",
 					}
+					
+					lowerQuestion := strings.ToLower(question)
+					for _, prefix := range prefixes {
+						lowerPrefix := strings.ToLower(prefix)
+						if strings.HasPrefix(lowerQuestion, lowerPrefix) {
+							simplified = question[len(prefix):]
+							break
+						}
+					}
+					
+					// Quitar signo de interrogación final
+					simplified = strings.TrimSuffix(simplified, "?")
+					
+					// Capitalizar primera letra
+					if len(simplified) > 0 {
+						runes := []rune(simplified)
+						runes[0] = unicode.ToUpper(runes[0])
+						simplified = string(runes)
+					}
+					
+					suggestedQuestions = append(suggestedQuestions, ChatOption{
+						Label:    simplified,
+						QueryRef: question,
+					})
+					log.Printf("Added question option: '%s'", simplified)
 				}
 			}
 			
-			// Si encontramos preguntas, eliminar ese párrafo del texto principal
+			// Si encontramos preguntas, eliminar desde la primera pregunta en adelante
 			if len(suggestedQuestions) > 0 {
-				responseText = strings.TrimSpace(llmResponseText[:lastParagraphIdx])
+				responseText = strings.TrimSpace(llmResponseText[:firstQuestionPos])
+				// Asegurar que termine con punto
+				if !strings.HasSuffix(responseText, ".") {
+					responseText += "."
+				}
 			}
 		}
 	}
