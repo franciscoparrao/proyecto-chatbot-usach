@@ -34,7 +34,7 @@ const (
 
 	// Parámetros de Búsqueda RAG
 	numCandidatesInitial    = 100 // Para kNN en la búsqueda inicial amplia
-	initialRetrievalResults = 6   // Documentos para síntesis de temas o respuesta amplia inicial - Reducido para evitar MAX_TOKENS
+	initialRetrievalResults = 10  // Documentos para síntesis de temas o respuesta amplia inicial
 	numCandidatesFollowUp   = 50  // Para kNN en búsquedas de seguimiento más enfocadas
 	// numResultsFollowUp estaba en 3 en la conversación, pero puede ser igual a numResults si esa constante se usa para el tamaño general.
 	// Usaremos una nueva constante para mayor claridad.
@@ -360,14 +360,25 @@ func buildContextQuery(history []Message, currentQuery string) string {
 
 // --- Funciones Auxiliares de Lógica de Chat ---
 
-func (h *ChatHandler) rewriteQueryWithHistory(originalQuery string, history []ChatMessage, c *gin.Context) (string, error) {
-	session := LoadSession(c)
-	if session.ID == "" {
-		session = newSession()
+func (h *ChatHandler) rewriteQueryWithHistory(originalQuery string, history []ChatMessage) (string, error) {
+	if len(history) == 0 {
+		log.Println("No history, using original query for rewrite (which means no rewrite).")
+		return originalQuery, nil
 	}
 
-	// Construir contexto concatenando historial + nueva pregunta
-	contextQuery := buildContextQuery(session.History, originalQuery)
+	// Construir contexto del historial
+	var historyStr strings.Builder
+	startIdx := 0
+	if len(history) > 6 { // Últimos 3 intercambios
+		startIdx = len(history) - 6
+	}
+	for i := startIdx; i < len(history); i++ {
+		role := "Usuario"
+		if history[i].Role == "model" || history[i].Role == "bot" {
+			role = "Asistente"
+		}
+		historyStr.WriteString(fmt.Sprintf("%s: %s\n", role, history[i].Text))
+	}
 
 	rewritePrompt := fmt.Sprintf(`Tu tarea es tomar un historial de conversación y la "Última Pregunta del Usuario". Genera una nueva pregunta que sea autónoma y refleje la intención completa y específica del usuario, resolviendo cualquier referencia contextual del historial. La nueva pregunta se usará para buscar información precisa en una base de datos de investigación.
 
@@ -388,9 +399,9 @@ Historial de la Conversación:
 Última Pregunta del Usuario:
 %s
 
-Pregunta Reescrita Optimizada para Búsqueda:`, contextQuery, originalQuery)
+Pregunta Reescrita Optimizada para Búsqueda:`, historyStr.String(), originalQuery)
 
-	log.Printf("Calling LLM for query rewriting. Preview of history for rewrite:\n%s\nOriginal query for rewrite: %s\n", contextQuery, originalQuery)
+	log.Printf("Calling LLM for query rewriting. History length: %d messages. Original query: %s\n", len(history), originalQuery)
 
 	generationConfigForRewrite := &GeminiGenerationConfig{
 		Temperature:     0.1,
@@ -577,12 +588,30 @@ func (h *ChatHandler) HandleChatRequest(c *gin.Context) {
 			// Si IsOptionReply es true pero SelectedRef está vacío, la query actual DEBE ser la selección.
 			log.Printf("User selected an offered option (IsOptionReply=true, SelectedRef empty). Using current query as effectiveQuery: '%s'", effectiveQuery)
 		}
-	} else if len(request.History) > 0 {
-		rewrittenQuery, errRewrite := h.rewriteQueryWithHistory(request.Query, request.History, c)
-		if errRewrite != nil {
-			log.Printf("WARN: Could not rewrite query with history, using original: %v", errRewrite)
-		} else {
-			effectiveQuery = rewrittenQuery
+	} else {
+		// Siempre intentar reescribir la query usando el historial de las cookies
+		session := LoadSession(c)
+		if len(session.History) > 0 {
+			// Convertir el historial de Message a ChatMessage para compatibilidad
+			var chatHistory []ChatMessage
+			for _, msg := range session.History {
+				role := "user"
+				if msg.Role == "bot" {
+					role = "model"
+				}
+				chatHistory = append(chatHistory, ChatMessage{
+					Role: role,
+					Text: msg.Content,
+				})
+			}
+			
+			rewrittenQuery, errRewrite := h.rewriteQueryWithHistory(request.Query, chatHistory)
+			if errRewrite != nil {
+				log.Printf("WARN: Could not rewrite query with history, using original: %v", errRewrite)
+			} else {
+				effectiveQuery = rewrittenQuery
+				log.Printf("Query rewritten from '%s' to '%s'", request.Query, effectiveQuery)
+			}
 		}
 	}
 	log.Printf(">>> FINAL EFFECTIVE QUERY FOR RAG: %s", effectiveQuery)
