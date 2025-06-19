@@ -620,12 +620,26 @@ func (h *ChatHandler) HandleChatRequest(c *gin.Context) {
 		log.Println("Using HYBRID search mode.")
 		esQuery = gin.H{
 			"query": gin.H{
-				"multi_match": gin.H{
-					"query":     effectiveQuery,
-					"fields":    []string{"OriginalTitle^5", "ChunkText^5"},
-					"type":      "best_fields",
-					"fuzziness": "AUTO",
-					"boost":     textSearchBoost,
+				"bool": gin.H{
+					"should": []gin.H{
+						{
+							"multi_match": gin.H{
+								"query":     effectiveQuery,
+								"fields":    []string{"OriginalTitle^10", "ChunkText^3"}, // Mayor peso al título
+								"type":      "best_fields",
+								"fuzziness": "AUTO",
+								"boost":     textSearchBoost,
+							},
+						},
+						{
+							"match_phrase": gin.H{ // Búsqueda exacta de frases
+								"ChunkText": gin.H{
+									"query": effectiveQuery,
+									"boost": textSearchBoost * 2, // Mayor boost para coincidencias exactas
+								},
+							},
+						},
+					},
 				},
 			},
 			"knn": gin.H{
@@ -851,7 +865,13 @@ func (h *ChatHandler) HandleChatRequest(c *gin.Context) {
         1.  Inicia con un saludo breve y entusiasta si es el comienzo de una nueva línea de consulta (ej. "¡Hola! Soy InvestigaUSACH...", "¡Excelente pregunta!"). Para seguimientos, sé más directo.
         2.  Resume la información MÁS DIRECTAMENTE RELEVANTE de forma concisa (1-3 frases clave) para responder a la pregunta.
         3.  Si el contexto lo permite, elabora con más detalles, explica conceptos si es necesario, y conecta información de diferentes fragmentos del contexto. Intenta citar de forma general la fuente si es un estudio particular (ej. "Según un estudio de la USACH sobre X...", "La publicación titulada 'Y' indica que...").
-        4.  Finaliza con una pregunta abierta y específica que invite al usuario a profundizar en aspectos del tema tratado que SÍ estén cubiertos (o puedan inferirse plausiblemente) por el contexto. Ej: "¿Te gustaría que detallemos la metodología de [aspecto X] o los resultados principales de [aspecto Y]?"
+        4.  Finaliza tu respuesta con un párrafo separado que contenga EXACTAMENTE 3 preguntas sugeridas breves y específicas sobre aspectos del tema que SÍ estén cubiertos en el contexto. Formato:
+            
+            [Tu respuesta principal aquí...]
+            
+            ¿Te gustaría profundizar en la metodología utilizada en el estudio?
+            ¿Quieres conocer más sobre los resultados obtenidos?
+            ¿Deseas explorar las aplicaciones prácticas de esta investigación?
 
 3.  **Manejo de Contexto Insuficiente o Falta de Aspectos Específicos:**
     * **CASO A: La "Pregunta del usuario" es un seguimiento sobre un TEMA CENTRAL ya establecido en la conversación (visible en el "Historial Reciente"), pero el "Contexto Proporcionado" actual NO cubre el ASPECTO ESPECÍFICO solicitado sobre ese TEMA CENTRAL.**
@@ -930,45 +950,73 @@ func (h *ChatHandler) HandleChatRequest(c *gin.Context) {
 	var suggestedQuestions []ChatOption
 	responseText := llmResponseText
 	
-	// Buscar preguntas al final del texto (después de "¿Te gustaría", "¿Podría", etc.)
-	// Patrón para detectar preguntas sugeridas
-	questionPattern := regexp.MustCompile(`(?i)(?:¿te gustaría|¿podría|¿quieres|¿deseas)[^?]+\?`)
-	matches := questionPattern.FindAllString(llmResponseText, -1)
-	
-	// Si encontramos preguntas sugeridas al final
-	if len(matches) > 0 {
-		// Tomar las últimas preguntas (hasta 3)
-		startIdx := len(matches) - 3
-		if startIdx < 0 {
-			startIdx = 0
-		}
+	// Buscar preguntas sugeridas en el texto
+	// Primero buscar si hay un párrafo final que contenga preguntas
+	lastParagraphIdx := strings.LastIndex(llmResponseText, "\n\n")
+	if lastParagraphIdx > 0 {
+		lastParagraph := llmResponseText[lastParagraphIdx:]
 		
-		for i := startIdx; i < len(matches); i++ {
-			question := strings.TrimSpace(matches[i])
-			// Limpiar la pregunta de caracteres no deseados
-			question = strings.TrimPrefix(question, "o ")
-			question = strings.TrimPrefix(question, "O ")
-			question = strings.TrimPrefix(question, ", ")
-			
-			if len(question) > 10 { // Asegurar que es una pregunta válida
-				suggestedQuestions = append(suggestedQuestions, ChatOption{
-					Label:    question,
-					QueryRef: question,
-				})
+		// Patrón para detectar preguntas sugeridas
+		questionPattern := regexp.MustCompile(`(?i)(?:¿[^?]+\?)`)
+		matches := questionPattern.FindAllString(lastParagraph, -1)
+		
+		// Si el último párrafo contiene preguntas sugeridas
+		if len(matches) > 0 {
+			// Extraer hasta 3 preguntas
+			for i, match := range matches {
+				if i >= 3 {
+					break
+				}
+				question := strings.TrimSpace(match)
+				// Limpiar prefijos comunes
+				question = strings.TrimPrefix(question, "- ")
+				question = strings.TrimPrefix(question, "• ")
+				question = strings.TrimPrefix(question, "o ")
+				question = strings.TrimPrefix(question, "O ")
+				question = strings.TrimPrefix(question, ", ")
+				
+				if len(question) > 10 {
+					// Extraer solo el contenido específico de la pregunta
+					// Por ejemplo: "¿Te gustaría que detallemos la metodología de X?" → "Detallar la metodología de X"
+					if strings.Contains(strings.ToLower(question), "¿te gustaría") {
+						// Convertir a afirmación
+						simplified := strings.ReplaceAll(strings.ToLower(question), "¿te gustaría que ", "")
+						simplified = strings.ReplaceAll(simplified, "¿te gustaría ", "")
+						simplified = strings.TrimSuffix(simplified, "?")
+						// Capitalizar primera letra
+						if len(simplified) > 0 {
+							simplified = strings.ToUpper(simplified[:1]) + simplified[1:]
+						}
+						suggestedQuestions = append(suggestedQuestions, ChatOption{
+							Label:    simplified,
+							QueryRef: question,
+						})
+					} else if strings.Contains(strings.ToLower(question), "¿quieres") || strings.Contains(strings.ToLower(question), "¿deseas") {
+						// Similar para otras formas
+						simplified := question
+						simplified = strings.ReplaceAll(strings.ToLower(simplified), "¿quieres ", "")
+						simplified = strings.ReplaceAll(simplified, "¿deseas ", "")
+						simplified = strings.TrimSuffix(simplified, "?")
+						if len(simplified) > 0 {
+							simplified = strings.ToUpper(simplified[:1]) + simplified[1:]
+						}
+						suggestedQuestions = append(suggestedQuestions, ChatOption{
+							Label:    simplified,
+							QueryRef: question,
+						})
+					} else {
+						// Si es una pregunta directa, usarla tal cual
+						suggestedQuestions = append(suggestedQuestions, ChatOption{
+							Label:    question,
+							QueryRef: question,
+						})
+					}
+				}
 			}
-		}
-		
-		// Si encontramos preguntas, eliminarlas del texto principal
-		if len(suggestedQuestions) > 0 {
-			// Encontrar la posición de la primera pregunta sugerida
-			firstQuestionPos := strings.Index(llmResponseText, matches[startIdx])
-			if firstQuestionPos > 0 {
-				// Cortar el texto antes de las preguntas
-				responseText = strings.TrimSpace(llmResponseText[:firstQuestionPos])
-				// Eliminar posibles conectores al final
-				responseText = strings.TrimSuffix(responseText, ".")
-				responseText = strings.TrimSuffix(responseText, ":")
-				responseText = strings.TrimSpace(responseText) + "."
+			
+			// Si encontramos preguntas, eliminar ese párrafo del texto principal
+			if len(suggestedQuestions) > 0 {
+				responseText = strings.TrimSpace(llmResponseText[:lastParagraphIdx])
 			}
 		}
 	}
