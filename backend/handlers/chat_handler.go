@@ -44,10 +44,10 @@ const (
 
 	// Boosts para Búsqueda Híbrida
 	// Para consultas iniciales/exploratorias (queremos que el texto domine si hay keywords específicas)
-	textBoostInitialAggressive = 3.0 // Boost extremo para dar prioridad al texto
-	knnBoostInitialAggressive  = 0.3 // Reducido para dar aún más prioridad al texto
+	textBoostInitialAggressive = 10.0 // Boost muy alto para priorizar matches de texto
+	knnBoostInitialAggressive  = 0.1  // Muy reducido para que el texto domine completamente
 	// Para seguimientos o selecciones de opciones (más balanceado)
-	textBoostFollowUpBalanced = 1.5
+	textBoostFollowUpBalanced = 2.0
 	knnBoostFollowUpBalanced  = 1.0
 )
 
@@ -430,7 +430,7 @@ func (h *ChatHandler) synthesizeTopics(query string, mongoResults []MongoResult)
 	var contextForSynthesis strings.Builder
 	titlesForLog := []string{}
 	for idx, doc := range mongoResults {
-		extractLength := 250 // Un poco más de extracto para la síntesis
+		extractLength := 150 // Reducido para evitar MAX_TOKENS
 		if len(doc.ChunkText) < extractLength {
 			extractLength = len(doc.ChunkText)
 		}
@@ -620,26 +620,12 @@ func (h *ChatHandler) HandleChatRequest(c *gin.Context) {
 		log.Println("Using HYBRID search mode.")
 		esQuery = gin.H{
 			"query": gin.H{
-				"bool": gin.H{
-					"should": []gin.H{
-						{
-							"multi_match": gin.H{
-								"query":     effectiveQuery,
-								"fields":    []string{"OriginalTitle^10", "ChunkText^3"}, // Mayor peso al título
-								"type":      "best_fields",
-								"fuzziness": "AUTO",
-								"boost":     textSearchBoost,
-							},
-						},
-						{
-							"match_phrase": gin.H{ // Búsqueda exacta de frases
-								"ChunkText": gin.H{
-									"query": effectiveQuery,
-									"boost": textSearchBoost * 2, // Mayor boost para coincidencias exactas
-								},
-							},
-						},
-					},
+				"multi_match": gin.H{
+					"query":     effectiveQuery,
+					"fields":    []string{"ChunkText^10", "OriginalTitle^1"}, // Máxima prioridad al contenido
+					"type":      "best_fields",
+					"fuzziness": "AUTO",
+					"boost":     textSearchBoost,
 				},
 			},
 			"knn": gin.H{
