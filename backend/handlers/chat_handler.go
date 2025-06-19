@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -14,6 +15,8 @@ import (
 
 	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"github.com/gorilla/securecookie"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -31,7 +34,7 @@ const (
 
 	// Parámetros de Búsqueda RAG
 	numCandidatesInitial    = 100 // Para kNN en la búsqueda inicial amplia
-	initialRetrievalResults = 6  // Documentos para síntesis de temas o respuesta amplia inicial - Reducido para evitar MAX_TOKENS
+	initialRetrievalResults = 6   // Documentos para síntesis de temas o respuesta amplia inicial - Reducido para evitar MAX_TOKENS
 	numCandidatesFollowUp   = 50  // Para kNN en búsquedas de seguimiento más enfocadas
 	// numResultsFollowUp estaba en 3 en la conversación, pero puede ser igual a numResults si esa constante se usa para el tamaño general.
 	// Usaremos una nueva constante para mayor claridad.
@@ -181,27 +184,189 @@ func NewChatHandler(mongoCli *mongo.Client, esCli *elasticsearch.Client, db stri
 	}
 }
 
+// --- Estructura para Almacenamiento de Chat en Cookies ---
+type Message struct {
+	Role    string    `json:"role"` // "user" o "bot"
+	Content string    `json:"content"`
+	SentAt  time.Time `json:"sent_at"`
+}
+
+type Session struct {
+	ID        string    `json:"id"`
+	History   []Message `json:"history"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+type GZIPSerializer struct{}
+
+const MaxHistory = 10
+
+var (
+	hashKey  = securecookie.GenerateRandomKey(64)
+	blockKey = securecookie.GenerateRandomKey(32)
+	s        *securecookie.SecureCookie
+)
+
+// --- Funciones de almacenamiento maximo en el manejo de sesión ---
+func trimHistory(history []Message) []Message {
+	if len(history) <= MaxHistory {
+		return history
+	}
+	return history[len(history)-MaxHistory:]
+}
+
+// --- Serializador GZIP para SecureCookie ---
+func (g GZIPSerializer) Serialize(src interface{}) ([]byte, error) {
+	// 1. Serializar a JSON
+	jsonData, err := json.Marshal(src)
+	if err != nil {
+		return nil, err // Devolver error original
+	}
+
+	// 2. Comprimir con GZIP
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	if _, err := gz.Write(jsonData); err != nil {
+		return nil, err // Devolver error original
+	}
+	if err := gz.Close(); err != nil {
+		return nil, err // Devolver error original
+	}
+
+	return buf.Bytes(), nil
+}
+
+// Deserializar GZIP
+func (g GZIPSerializer) Deserialize(src []byte, dst interface{}) error {
+	// 1. Descomprimir GZIP
+	buf := bytes.NewBuffer(src)
+	gz, err := gzip.NewReader(buf)
+	if err != nil {
+		return err // Devolver error original
+	}
+	defer gz.Close()
+
+	// 2. Leer datos descomprimidos
+	jsonData, err := io.ReadAll(gz)
+	if err != nil {
+		return err // Devolver error original
+	}
+
+	// 3. Deserializar JSON
+	if err := json.Unmarshal(jsonData, dst); err != nil {
+		return err // Devolver error original
+	}
+
+	return nil
+}
+
+// Inicializar SecureCookie con GZIPSerializer
+func init() {
+	s = securecookie.New(hashKey, blockKey)
+	s.SetSerializer(GZIPSerializer{})
+}
+
+// Función para guardar sesión en cookie
+func SaveSession(c *gin.Context, session Session) error {
+	encoded, err := s.Encode("chat_session", session)
+	if err != nil {
+		return err
+	}
+
+	c.SetCookie("chat_session", encoded, 1800, "/", "", true, true)
+	return nil
+}
+
+// Función para cargar sesión desde cookie (con recuperación de errores)
+func LoadSession(c *gin.Context) Session {
+	var session Session
+	cookie, err := c.Cookie("chat_session")
+
+	// Caso 1: No hay cookie → nueva sesión
+	if err == http.ErrNoCookie {
+		return newSession()
+	}
+
+	// Caso 2: Error al leer cookie → log y nueva sesión
+	if err != nil {
+		log.Printf("Error leyendo cookie: %v", err)
+		return newSession()
+	}
+
+	// Caso 3: Decodificación fallida → log, borra cookie corrupta y nueva sesión
+	if err := s.Decode("chat_session", cookie, &session); err != nil {
+		log.Printf("Cookie corrupta: %v. Generando nueva sesión...", err)
+		clearInvalidCookie(c) // Limpia la cookie inválida
+		return newSession()
+	}
+
+	return session
+}
+
+// Función para crear nueva sesión
+func newSession() Session {
+	return Session{
+		ID:        uuid.New().String(),
+		ExpiresAt: time.Now().Add(30 * time.Minute),
+		History:   []Message{},
+	}
+}
+
+func clearInvalidCookie(c *gin.Context) {
+	c.SetCookie("chat_session", "", -1, "/", "", false, true)
+}
+
+// Función de debug para imprimir conversación
+func printSessionFromCookie(session Session) {
+	fmt.Println("=== Conversación almacenada en cookies ===")
+	for i, msg := range session.History {
+		fmt.Printf("%d. [%s][%s] %s\n",
+			i+1,
+			msg.SentAt.Format("2006-01-02 15:04:05"),
+			msg.Role,
+			msg.Content)
+	}
+}
+
+// Devuelve el último mensaje del historial de la sesión.
+func GetLastMessageContent(session Session) string {
+	if len(session.History) == 0 {
+		return ""
+	}
+	return session.History[len(session.History)-1].Content
+}
+
+// Función auxiliar para construir el contexto
+func buildContextQuery(history []Message, currentQuery string) string {
+	var contextBuilder strings.Builder
+
+	// Tomar solo los últimos 5 mensajes del usuario para el contexto
+	start := len(history) - 5
+	if start < 0 {
+		start = 0
+	}
+
+	for _, msg := range history[start:] {
+		if msg.Role == "user" {
+			contextBuilder.WriteString(msg.Content)
+			contextBuilder.WriteString(". ") // Separador entre mensajes
+		}
+	}
+
+	contextBuilder.WriteString(currentQuery) // Agregar la nueva consulta al final
+	return contextBuilder.String()
+}
+
 // --- Funciones Auxiliares de Lógica de Chat ---
 
-func (h *ChatHandler) rewriteQueryWithHistory(originalQuery string, history []ChatMessage) (string, error) {
-	if len(history) == 0 {
-		log.Println("No history, using original query for rewrite (which means no rewrite).")
-		return originalQuery, nil
+func (h *ChatHandler) rewriteQueryWithHistory(originalQuery string, history []ChatMessage, c *gin.Context) (string, error) {
+	session := LoadSession(c)
+	if session.ID == "" {
+		session = newSession()
 	}
 
-	var historyStrBuilder strings.Builder
-	startIdx := 0
-	if len(history) > 6 { // Últimos 3 intercambios (user+bot)
-		startIdx = len(history) - 6
-	}
-	for i := startIdx; i < len(history); i++ {
-		msg := history[i]
-		role := "Usuario"
-		if msg.Role == "model" || msg.Role == "bot" || msg.Role == "asistente" {
-			role = "Asistente"
-		}
-		historyStrBuilder.WriteString(fmt.Sprintf("%s: %s\n", role, msg.Text))
-	}
+	// Construir contexto concatenando historial + nueva pregunta
+	contextQuery := buildContextQuery(session.History, originalQuery)
 
 	rewritePrompt := fmt.Sprintf(`Tu tarea es tomar un historial de conversación y la "Última Pregunta del Usuario". Genera una nueva pregunta que sea autónoma y refleje la intención completa y específica del usuario, resolviendo cualquier referencia contextual del historial. La nueva pregunta se usará para buscar información precisa en una base de datos de investigación.
 
@@ -222,9 +387,9 @@ Historial de la Conversación:
 Última Pregunta del Usuario:
 %s
 
-Pregunta Reescrita Optimizada para Búsqueda:`, historyStrBuilder.String(), originalQuery)
+Pregunta Reescrita Optimizada para Búsqueda:`, contextQuery, originalQuery)
 
-	log.Printf("Calling LLM for query rewriting. Preview of history for rewrite:\n%s\nOriginal query for rewrite: %s\n", historyStrBuilder.String(), originalQuery)
+	log.Printf("Calling LLM for query rewriting. Preview of history for rewrite:\n%s\nOriginal query for rewrite: %s\n", contextQuery, originalQuery)
 
 	generationConfigForRewrite := &GeminiGenerationConfig{
 		Temperature:     0.1,
@@ -412,7 +577,7 @@ func (h *ChatHandler) HandleChatRequest(c *gin.Context) {
 			log.Printf("User selected an offered option (IsOptionReply=true, SelectedRef empty). Using current query as effectiveQuery: '%s'", effectiveQuery)
 		}
 	} else if len(request.History) > 0 {
-		rewrittenQuery, errRewrite := h.rewriteQueryWithHistory(request.Query, request.History)
+		rewrittenQuery, errRewrite := h.rewriteQueryWithHistory(request.Query, request.History, c)
 		if errRewrite != nil {
 			log.Printf("WARN: Could not rewrite query with history, using original: %v", errRewrite)
 		} else {
@@ -665,7 +830,13 @@ func (h *ChatHandler) HandleChatRequest(c *gin.Context) {
 
 	log.Println("Proceeding with direct LLM call for answer generation (either follow-up or no clear topics).")
 
-	recentHistoryStr := buildRecentHistoryString(request.History)
+	session := LoadSession(c)
+	if session.ID == "" {
+		session = newSession()
+	}
+
+	recentHistoryStr := buildContextQuery(session.History, effectiveQuery)
+	lastMessage := GetLastMessageContent(session)
 	mainPrompt := fmt.Sprintf(`Eres "InvestigaUSACH", un asistente virtual especializado, entusiasta y muy didáctico de la Universidad de Santiago de Chile (USACH). Tu misión es proporcionar información precisa y atractiva sobre la investigación realizada en la USACH, basándote EXCLUSIVAMENTE en el "Contexto Proporcionado" (que puede incluir noticias, artículos científicos en español o inglés). Tu objetivo es que el usuario aprenda y se interese por la investigación de la USACH.
 
 **Instrucciones CRÍTICAS para tu respuesta (SIEMPRE EN ESPAÑOL):**
@@ -701,13 +872,18 @@ func (h *ChatHandler) HandleChatRequest(c *gin.Context) {
 %s
 **--- FIN DEL CONTEXTO PROPORCIONADO ---**
 
-**Historial Reciente (Últimos 2-3 intercambios, si aplica, para darte más contexto conversacional):**
+**Historial Reciente (Últimos 2-5 intercambios, si aplica, para darte más contexto conversacional):**
 %s
+**--- FIN DEL HISTORIAL RECENTE ---**
+
+**--- INICIO DE LA ULTIMA RESPUESTA ENTREGADA (en español), si esta vacia omite su utilizacion, (Recuerda que si existe alguna respuesta anterior, ya saludaste al usuario) ---**
+%s 
+**--- FIN DE LA RESPUESTA PROPORCIONADA ---**
 
 **Pregunta del usuario (en español):**
 %s
 
-**InvestigaUSACH Responde (EN ESPAÑOL):**`, contextString, recentHistoryStr, effectiveQuery)
+**InvestigaUSACH Responde (EN ESPAÑOL):**`, contextString, recentHistoryStr, lastMessage, effectiveQuery)
 
 	finalAnswerConfig := &GeminiGenerationConfig{
 		Temperature:     0.5,  // Un poco menos creativo para respuestas directas
@@ -722,6 +898,32 @@ func (h *ChatHandler) HandleChatRequest(c *gin.Context) {
 		return
 	}
 	log.Println("Successfully received final answer from LLM.")
+
+	session.History = append(session.History, Message{
+		Role:    "user",
+		Content: request.Query,
+		SentAt:  time.Now(),
+	})
+
+	session.History = append(session.History, Message{
+		Role:    "bot",
+		Content: llmResponseText,
+		SentAt:  time.Now(),
+	})
+
+	// Limitar el tamaño del historial a 10 mensajes (5 user + 5 bot)
+	session.History = trimHistory(session.History)
+
+	// 4. Guardar en cookies
+	if err := SaveSession(c, session); err != nil {
+		log.Printf("Error guardando sesión: %v", err)
+	}
+
+	// 5. Debug: imprimir conversación almacenada
+	if session.ID != "" {
+		fmt.Println("=== DEBUG: Contenido de cookies ===")
+		printSessionFromCookie(session)
+	}
 
 	responseType := "direct_answer"
 	if len(mongoResults) == 0 && !strings.Contains(llmResponseText, "No he encontrado información específica") { // Una heurística simple
