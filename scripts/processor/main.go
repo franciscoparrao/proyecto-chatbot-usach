@@ -50,18 +50,34 @@ const (
 )
 
 // --- Estructuras ---
+type AuthorDetail struct {
+	Name            string `json:"name"`
+	Email           string `json:"email,omitempty"`
+	Affiliation     string `json:"affiliation,omitempty"`
+	IsCorresponding bool   `json:"is_corresponding,omitempty"`
+	IsUSACH         bool   `json:"is_usach,omitempty"`
+}
+
 type ScrapedArticle struct {
-	Title           string `json:"title"`
-	Authors         string `json:"authors"`
-	PublicationDate string `json:"publication_date"`
-	RawText         string `json:"raw_text"`
+	Title           string         `json:"title"`
+	Authors         string         `json:"authors"`
+	PublicationDate string         `json:"publication_date"`
+	RawText         string         `json:"raw_text"`
+	AuthorDetails   []AuthorDetail `json:"author_details,omitempty"`
+	DOI             string         `json:"doi,omitempty"`
+	Journal         string         `json:"journal,omitempty"`
+	Email           string         `json:"email,omitempty"`
 }
 
 type MongoDocument struct {
-	OriginalTitle           string `bson:"originaltitle"`
-	OriginalAuthors         string `bson:"originalauthors"`
-	OriginalPublicationDate string `bson:"originalpublicationdate"`
-	ChunkText               string `bson:"chunktext"`
+	OriginalTitle           string         `bson:"originaltitle"`
+	OriginalAuthors         string         `bson:"originalauthors"`
+	OriginalPublicationDate string         `bson:"originalpublicationdate"`
+	ChunkText               string         `bson:"chunktext"`
+	AuthorDetails           []AuthorDetail `bson:"author_details,omitempty"`
+	DOI                     string         `bson:"doi,omitempty"`
+	Journal                 string         `bson:"journal,omitempty"`
+	Email                   string         `bson:"email,omitempty"`
 }
 
 type ElasticsearchDocument struct {
@@ -70,6 +86,7 @@ type ElasticsearchDocument struct {
 	OriginalTitle           string    `json:"OriginalTitle,omitempty"`
 	OriginalAuthors         string    `json:"OriginalAuthors,omitempty"`
 	OriginalPublicationDate string    `json:"OriginalPublicationDate,omitempty"`
+	ChunkText               string    `json:"ChunkText"`
 }
 
 type GoogleApiEmbeddingRequest struct {
@@ -275,6 +292,10 @@ func main() {
 					OriginalAuthors:         article.Authors,
 					OriginalPublicationDate: article.PublicationDate,
 					ChunkText:               chunkText,
+					AuthorDetails:           article.AuthorDetails,
+					DOI:                     article.DOI,
+					Journal:                 article.Journal,
+					Email:                   article.Email,
 				}
 				insertCtx, insertMongoCancel := context.WithTimeout(context.Background(), 5*time.Second)
 				resMongo, errMongo := collection.InsertOne(insertCtx, mongoDoc)
@@ -296,6 +317,7 @@ func main() {
 					OriginalTitle:           article.Title,
 					OriginalAuthors:         article.Authors,
 					OriginalPublicationDate: article.PublicationDate,
+					ChunkText:               chunkText,
 				}
 				data, errJson := json.Marshal(esDoc)
 				if errJson != nil {

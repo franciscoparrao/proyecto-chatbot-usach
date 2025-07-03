@@ -2,86 +2,80 @@
   <div class="flex flex-col h-[80vh] w-full max-w-[700px] mx-auto my-5 border border-gray-200 rounded-2xl overflow-hidden shadow-2xl font-sans bg-white">
     <!-- Título -->
     <h2 class="text-center py-3 m-0 bg-gray-50 border-b border-gray-200 text-xl font-bold tracking-tight text-gray-800">
-      Chat de Investigación USACH (Prototipo)
+      Chat de Investigación USACH
     </h2>
-
-    <!-- Configuración de búsqueda híbrida -->
-    <div class="flex justify-center items-center gap-2 py-2 bg-gray-50 border-b border-gray-200">
-      <label class="relative inline-block w-12 h-6">
-        <input type="checkbox" v-model="hybridModeEnabled" class="peer opacity-0 w-0 h-0" />
-        <span
-          class="absolute cursor-pointer top-0 left-0 right-0 bottom-0 bg-gray-300 rounded-full transition peer-checked:bg-orange-500
-            before:content-[''] before:absolute before:h-4 before:w-4 before:left-1 before:bottom-1 before:bg-white before:rounded-full before:transition
-            peer-checked:before:translate-x-6"
-        ></span>
-      </label>
-      <span class="text-sm text-gray-600">Modo búsqueda híbrida: <span :class="hybridModeEnabled ? 'text-orange-500 font-semibold' : 'text-gray-400'">{{ hybridModeEnabled ? 'Activado' : 'Desactivado' }}</span></span>
-    </div>
 
     <!-- Área de mensajes -->
     <div ref="messagesAreaRef" class="flex-1 overflow-y-auto p-4 bg-white flex flex-col text-sm">
       <TransitionGroup name="msg" tag="div" class="flex flex-col gap-2">
-        <div
-          v-for="message in messages"
-          :key="message.id"
-          class="flex items-end"
-          :class="message.sender === 'user' ? 'justify-end' : 'justify-start'"
-        >
-          <!-- Avatar solo para el bot -->
-          <template v-if="message.sender === 'bot'">
-            <img
-              src="../assets/bot-avatar.png"
-              alt="Agente"
-              class="w-10 h-10 rounded-full mr-2 self-end shadow border border-gray-200 bg-gray-100 object-cover"
-            />
-          </template>
+        <template v-for="message in messages" :key="message.id">
           <div
-            class="max-w-[75%] px-4 py-2 rounded-2xl shadow-sm break-words"
-            :class="message.sender === 'user'
-              ? 'bg-gradient-to-br from-orange-400 to-orange-500 text-white rounded-br-md ml-auto'
-              : 'bg-gray-100 text-gray-800 rounded-bl-md'"
+            class="flex items-end"
+            :class="message.sender === 'user' ? 'justify-end' : 'justify-start'"
           >
-            <span class="block text-xs font-bold mb-1 opacity-70 select-none">
-              {{ message.sender === 'bot' ? 'Asistente:' : 'Tú:' }}
-            </span>
-            <!-- Máquina de escribir solo para el mensaje actual del bot -->
-            <template v-if="message.sender === 'bot' && message.id === botMessageId">
-              <p class="m-0 leading-relaxed whitespace-pre-line">
-                <span v-html="botVisibleText"></span>
-                <span v-if="botTyping" class="invisible">
-                  {{ botFullText.slice(botVisibleText.length) }}
-                </span>
-              </p>
-              <!-- Opciones si existen -->
-              <div v-if="message.options && message.options.length > 0" class="flex flex-wrap gap-2 mt-3">
-                <div
-                  v-for="option in message.options"
-                  :key="option.label"
-                  @click="selectOption(option)"
-                  class="bg-gray-50 border border-gray-300 rounded-full px-3 py-1 text-sm cursor-pointer transition
-                    text-gray-700 hover:bg-orange-500 hover:text-white hover:border-orange-500"
-                >
-                  {{ option.label }}
-                </div>
-              </div>
+            <!-- Avatar solo para el bot -->
+            <template v-if="message.sender === 'bot'">
+              <img
+                src="../assets/bot-avatar.png"
+                alt="Agente"
+                class="w-10 h-10 rounded-full mr-2 self-end shadow border border-gray-200 bg-gray-100 object-cover"
+              />
             </template>
-            <!-- Mensaje normal (usuario o bot ya terminado) -->
-            <template v-else>
-              <p class="m-0 leading-relaxed whitespace-pre-line">{{ message.text }}</p>
-              <div v-if="message.options && message.options.length > 0" class="flex flex-wrap gap-2 mt-3">
-                <div
-                  v-for="option in message.options"
-                  :key="option.label"
-                  @click="selectOption(option)"
-                  class="bg-gray-50 border border-gray-300 rounded-full px-3 py-1 text-sm cursor-pointer transition
-                    text-gray-700 hover:bg-orange-500 hover:text-white hover:border-orange-500"
-                >
-                  {{ option.label }}
+            <div
+              class="max-w-[75%] px-4 py-2 rounded-2xl shadow-sm break-words"
+              :class="message.sender === 'user'
+                ? 'bg-gradient-to-br from-orange-400 to-orange-500 text-white rounded-br-md ml-auto'
+                : 'bg-gray-100 text-gray-800 rounded-bl-md'"
+            >
+              <span class="block text-xs font-bold mb-1 opacity-70 select-none">
+                {{ message.sender === 'bot' ? 'Asistente:' : 'Tú:' }}
+              </span>
+              <!-- Máquina de escribir solo para el mensaje actual del bot -->
+              <template v-if="message.sender === 'bot' && message.id === botMessageId">
+                <p class="m-0 leading-relaxed bot-message">
+                  <span v-html="botVisibleText"></span>
+                  <span v-if="botTyping" class="invisible">
+                    {{ botFullText.slice(botVisibleText.length) }}
+                  </span>
+                </p>
+                <!-- Opciones si existen -->
+                <div v-if="message.options && message.options.length > 0" class="flex flex-wrap gap-2 mt-3">
+                  <div
+                    v-for="option in message.options"
+                    :key="option.label"
+                    @click="selectOption(option)"
+                    class="bg-gray-50 border border-gray-300 rounded-full px-3 py-1 text-sm cursor-pointer transition
+                      text-gray-700 hover:bg-orange-500 hover:text-white hover:border-orange-500"
+                  >
+                    {{ option.label }}
+                  </div>
                 </div>
-              </div>
-            </template>
+              </template>
+              <!-- Mensaje normal (usuario o bot ya terminado) -->
+              <template v-else>
+                <p v-if="message.sender === 'bot'" class="m-0 leading-relaxed bot-message" v-html="markdownToHtml(message.text)"></p>
+                <p v-else class="m-0 leading-relaxed whitespace-pre-line">{{ message.text }}</p>
+                <div v-if="message.options && message.options.length > 0" class="flex flex-wrap gap-2 mt-3">
+                  <div
+                    v-for="option in message.options"
+                    :key="option.label"
+                    @click="selectOption(option)"
+                    class="bg-gray-50 border border-gray-300 rounded-full px-3 py-1 text-sm cursor-pointer transition
+                      text-gray-700 hover:bg-orange-500 hover:text-white hover:border-orange-500"
+                  >
+                    {{ option.label }}
+                  </div>
+                </div>
+              </template>
+            </div>
           </div>
-        </div>
+          <!-- Información de documentos solo para mensajes del bot -->
+          <DocumentInfo 
+            v-if="message.sender === 'bot' && message.documents && message.documents.length > 0" 
+            :documents="message.documents"
+            class="ml-12"
+          />
+        </template>
       </TransitionGroup>
       <!-- Indicador de carga animado -->
       <div v-if="isLoading && !botTyping" class="flex items-end justify-start mb-4">
@@ -126,6 +120,7 @@
 <script setup>
 import { ref, nextTick } from 'vue';
 import axios from 'axios';
+import DocumentInfo from './DocumentInfo.vue';
 
 // --- Reactive State ---
 const messages = ref([]);
@@ -135,13 +130,39 @@ const messagesAreaRef = ref(null);
 const hybridModeEnabled = ref(true);
 const backendUrl = process.env.VUE_APP_BACKEND_URL || 'http://localhost:8001/api/chat'; // URL from environment variables
 
+// --- Historial de chat para contexto ---
+const chatHistory = ref([]);
+const MAX_HISTORY_LENGTH = 10; // Limitar a últimos 10 mensajes para evitar requests muy grandes
+
 // --- Máquina de escribir ---
 const botTyping = ref(false);
 const botFullText = ref('');
 const botVisibleText = ref('');
 const botMessageId = ref(null);
 
-async function showBotMessageProgressively(text, options = null) {
+// --- Función para convertir markdown básico a HTML ---
+function markdownToHtml(text) {
+  // Escapar HTML para prevenir XSS
+  let html = text.replace(/&/g, '&amp;')
+                 .replace(/</g, '&lt;')
+                 .replace(/>/g, '&gt;')
+                 .replace(/"/g, '&quot;')
+                 .replace(/'/g, '&#039;');
+  
+  // Convertir markdown a HTML
+  // Negritas con **texto** (debe ir primero para evitar conflicto con cursivas)
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  
+  // Cursivas con *texto* (pero no dentro de **texto**)
+  html = html.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, '<em>$1</em>');
+  
+  // Saltos de línea
+  html = html.replace(/\n/g, '<br>');
+  
+  return html;
+}
+
+async function showBotMessageProgressively(text, options = null, documents = null) {
   botFullText.value = text;
   botVisibleText.value = '';
   botTyping.value = true;
@@ -153,15 +174,17 @@ async function showBotMessageProgressively(text, options = null) {
     id,
     sender: 'bot',
     text: '',
-    ...(options ? { options } : {})
+    ...(options ? { options } : {}),
+    ...(documents ? { documents } : {})
   });
 
   await nextTick();
 
   for (let i = 0; i <= text.length; i++) {
-    botVisibleText.value = text.slice(0, i);
+    const visibleText = text.slice(0, i);
+    botVisibleText.value = markdownToHtml(visibleText);
     const idx = messages.value.findIndex(m => m.id === id);
-    if (idx !== -1) messages.value[idx].text = botVisibleText.value;
+    if (idx !== -1) messages.value[idx].text = visibleText;
     await new Promise(res => setTimeout(res, 4)); // velocidad
   }
 
@@ -190,22 +213,43 @@ const sendMessage = async () => {
   });
   userInput.value = '';
   await scrollToBottom();
+  
+  // Agregar mensaje del usuario al historial
+  chatHistory.value.push({
+    role: 'user',
+    text: text
+  });
 
   isLoading.value = true;
   
   try {
     const response = await axios.post(backendUrl, { 
       query: text,
-      history: [],
+      history: chatHistory.value.map(msg => ({
+        role: msg.role === 'bot' ? 'model' : 'user',
+        text: msg.text
+      })),
       hybrid_mode: hybridModeEnabled.value
     }, {
       withCredentials: true
     });
 
     if (response?.data?.response) {
+      // Agregar respuesta del bot al historial
+      chatHistory.value.push({
+        role: 'bot',
+        text: response.data.response
+      });
+      
+      // Limitar el tamaño del historial
+      if (chatHistory.value.length > MAX_HISTORY_LENGTH) {
+        chatHistory.value = chatHistory.value.slice(-MAX_HISTORY_LENGTH);
+      }
+      
       // Si hay opciones, pásalas también (de cualquier tipo de respuesta)
       const options = response.data.options?.length > 0 ? response.data.options : null;
-      await showBotMessageProgressively(response.data.response, options);
+      const documents = response.data.documents?.length > 0 ? response.data.documents : null;
+      await showBotMessageProgressively(response.data.response, options, documents);
     }
   } catch (error) {
     console.error('Error:', error);
@@ -225,6 +269,12 @@ const selectOption = async (option) => {
     text: option.label,
   });
   
+  // Agregar la selección del usuario al historial
+  chatHistory.value.push({
+    role: 'user',
+    text: option.label
+  });
+  
   isLoading.value = true;
 
   try {
@@ -234,14 +284,29 @@ const selectOption = async (option) => {
       is_option_reply: true,
       intent: "select_option",
       hybrid_mode: hybridModeEnabled.value,
-      history: []
+      history: chatHistory.value.map(msg => ({
+        role: msg.role === 'bot' ? 'model' : 'user',
+        text: msg.text
+      }))
     }, {
       withCredentials: true
     });
 
     if (response?.data?.response) {
+      // Agregar respuesta del bot al historial
+      chatHistory.value.push({
+        role: 'bot',
+        text: response.data.response
+      });
+      
+      // Limitar el tamaño del historial
+      if (chatHistory.value.length > MAX_HISTORY_LENGTH) {
+        chatHistory.value = chatHistory.value.slice(-MAX_HISTORY_LENGTH);
+      }
+      
       const options = response.data.options?.length > 0 ? response.data.options : null;
-      await showBotMessageProgressively(response.data.response, options);
+      const documents = response.data.documents?.length > 0 ? response.data.documents : null;
+      await showBotMessageProgressively(response.data.response, options, documents);
     }
   } catch (error) {
     console.error('Error:', error);
@@ -253,10 +318,17 @@ const selectOption = async (option) => {
 };
 
 // Mensaje de bienvenida
+const welcomeMessage = '¡Hola! Soy Usachin, tu asistente de investigación de la Universidad de Santiago de Chile. Estoy aquí para ayudarte a explorar los proyectos de investigación, publicaciones científicas y avances académicos de la USACH. ¿Sobre qué tema te gustaría conocer más?';
 messages.value.push({
   id: Date.now(),
   sender: 'bot',
-  text: '¡Hola! Soy Usachin!, Tu asistente de investigación. Pregúntame sobre las noticias cargadas.'
+  text: welcomeMessage
+});
+
+// Agregar mensaje de bienvenida al historial para que el backend sepa que ya saludó
+chatHistory.value.push({
+  role: 'bot',
+  text: welcomeMessage
 });
 </script>
 
@@ -311,5 +383,26 @@ messages.value.push({
 .msg-leave-to {
   opacity: 0;
   transform: translateY(-20px);
+}
+
+/* Estilos para mensajes del bot con markdown */
+.bot-message strong {
+  font-weight: 600;
+  color: #1a1a1a;
+  background-color: #f0f0f0;
+  padding: 0 4px;
+  border-radius: 3px;
+}
+
+.bot-message em {
+  font-style: italic;
+  color: #555;
+}
+
+/* Mejorar legibilidad de párrafos */
+.bot-message br + br {
+  display: block;
+  content: "";
+  margin-top: 0.5em;
 }
 </style>

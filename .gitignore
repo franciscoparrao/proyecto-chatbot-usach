@@ -32,3 +32,5 @@ scripts/processor/chunks_with_embeddings.json
 # Añade aquí cualquier otra carpeta o archivo temporal general
 temp/
 *.tmp
+scripts/processor/files/scraped_articles_wos.json
+scripts/processor/files_enriched/

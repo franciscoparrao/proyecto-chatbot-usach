@@ -44,12 +44,12 @@ const (
 	minResultsForClarification = 3 // Mínimo de documentos recuperados para intentar ofrecer opciones de clarificación
 
 	// Boosts para Búsqueda Híbrida
-	// Para consultas iniciales/exploratorias (queremos que el texto domine si hay keywords específicas)
-	textBoostInitialAggressive = 10.0 // Boost muy alto para priorizar matches de texto
-	knnBoostInitialAggressive  = 0.1  // Muy reducido para que el texto domine completamente
+	// Para consultas iniciales/exploratorias (priorizar texto sobre embeddings)
+	textBoostInitialAggressive = 5.0 // Alto - búsqueda por palabras clave
+	knnBoostInitialAggressive  = 0.1 // Muy bajo - solo como complemento
 	// Para seguimientos o selecciones de opciones (más balanceado)
-	textBoostFollowUpBalanced = 2.0
-	knnBoostFollowUpBalanced  = 1.0
+	textBoostFollowUpBalanced = 3.0
+	knnBoostFollowUpBalanced  = 0.5
 )
 
 // --- Estructuras ---
@@ -70,14 +70,31 @@ type ChatRequest struct {
 
 type ChatOption struct {
 	Label    string `json:"label"`
-	QueryRef string `json:"query_ref"` // Texto que se usará como query si se selecciona esta opción
+	QueryRef string `json:"query_ref"` // Texto que se usará como query si se seleccionar esta opción
+}
+
+type AuthorDetail struct {
+	Name  string `json:"name" bson:"name"`
+	Email string `json:"email,omitempty" bson:"email,omitempty"`
+	ORCID string `json:"orcid,omitempty" bson:"orcid,omitempty"`
+}
+
+type DocumentInfo struct {
+	Title         string         `json:"title"`
+	Authors       string         `json:"authors"`
+	DOI           string         `json:"doi,omitempty"`
+	DOILink       string         `json:"doi_link,omitempty"`
+	Email         string         `json:"email,omitempty"`
+	Journal       string         `json:"journal,omitempty"`
+	AuthorDetails []AuthorDetail `json:"author_details,omitempty"`
 }
 
 type ChatResponse struct {
-	ResponseType  string       `json:"response_type"` // "direct_answer", "clarification_options", "no_context"
-	Response      string       `json:"response"`
-	Options       []ChatOption `json:"options,omitempty"`
-	RetrievedDocs []string     `json:"retrieved_docs,omitempty"` // Para depuración o mostrar fuentes (ej. títulos)
+	ResponseType  string         `json:"response_type"` // "direct_answer", "clarification_options", "no_context"
+	Response      string         `json:"response"`
+	Options       []ChatOption   `json:"options,omitempty"`
+	RetrievedDocs []string       `json:"retrieved_docs,omitempty"` // Para depuración o mostrar fuentes (ej. títulos)
+	Documents     []DocumentInfo `json:"documents,omitempty"`      // Información completa de documentos con contacto
 }
 
 type GoogleApiEmbeddingRequest struct {
@@ -163,6 +180,10 @@ type MongoResult struct {
 	OriginalAuthors         string             `bson:"originalauthors"`
 	OriginalPublicationDate string             `bson:"originalpublicationdate"`
 	ChunkText               string             `bson:"chunktext"`
+	DOI                     string             `bson:"doi,omitempty"`
+	Email                   string             `bson:"email,omitempty"`
+	Journal                 string             `bson:"journal,omitempty"`
+	AuthorDetails           []AuthorDetail     `bson:"author_details,omitempty"`
 }
 
 type ChatHandler struct {
@@ -193,14 +214,16 @@ type Message struct {
 }
 
 type Session struct {
-	ID        string    `json:"id"`
-	History   []Message `json:"history"`
-	ExpiresAt time.Time `json:"expires_at"`
+	ID            string         `json:"id"`
+	History       []Message      `json:"history"`
+	LastDocuments []DocumentInfo `json:"last_documents,omitempty"`
+	ExpiresAt     time.Time      `json:"expires_at"`
 }
 
 type GZIPSerializer struct{}
 
 const MaxHistory = 10
+const MaxDocuments = 3 // Máximo de documentos a guardar en sesión
 
 var (
 	hashKey  = securecookie.GenerateRandomKey(64)
@@ -299,6 +322,11 @@ func LoadSession(c *gin.Context) Session {
 		log.Printf("Cookie corrupta: %v. Generando nueva sesión...", err)
 		clearInvalidCookie(c) // Limpia la cookie inválida
 		return newSession()
+	}
+	
+	// Debug de documentos guardados
+	if len(session.LastDocuments) > 0 {
+		log.Printf("Session loaded successfully. History: %d messages, Docs: %d", len(session.History), len(session.LastDocuments))
 	}
 
 	return session
@@ -468,7 +496,7 @@ Subtemas Identificados (1-3 opciones, solo los más relevantes a la pregunta, fo
 
 	synthesisConfig := &GeminiGenerationConfig{
 		Temperature:     0.25,
-		MaxOutputTokens: 200, // Muy reducido para evitar MAX_TOKENS
+		MaxOutputTokens: 500, // Aumentado para permitir síntesis completa
 		TopP:            0.95,
 	}
 
@@ -504,6 +532,40 @@ Subtemas Identificados (1-3 opciones, solo los más relevantes a la pregunta, fo
 	}
 	log.Printf("Síntesis generó %d opciones.", len(chatOptions))
 	return chatOptions, nil
+}
+
+// expandQueryWithLLM usa el LLM para expandir la query con sinónimos y traducciones
+func (h *ChatHandler) expandQueryWithLLM(ctx context.Context, query string) (string, error) {
+	prompt := fmt.Sprintf(`Para el término de búsqueda "%s", proporciona sinónimos, términos relacionados y traducciones al inglés.
+Responde con una lista corta de máximo 10 palabras relevantes.
+Ejemplo: para "mecánica cuántica" -> "física cuántica, quantum mechanics, teoría cuántica"
+Respuesta:`, query)
+	
+	config := &GeminiGenerationConfig{
+		Temperature:     0.3,
+		TopP:           0.8,
+		TopK:           40,
+		MaxOutputTokens: 500,
+	}
+	
+	response, err := h.getLLMCompletion(prompt, config)
+	if err != nil {
+		return "", fmt.Errorf("error calling LLM for query expansion: %v", err)
+	}
+	
+	// Limpiar y limitar respuesta
+	expanded := strings.TrimSpace(response)
+	expanded = strings.Trim(expanded, ".,;:")
+	if strings.Contains(expanded, "\n") {
+		lines := strings.Split(expanded, "\n")
+		expanded = lines[0]
+	}
+	words := strings.Fields(expanded)
+	if len(words) > 15 {
+		expanded = strings.Join(words[:15], " ")
+	}
+	
+	return expanded, nil
 }
 
 // --- Handler Principal ---
@@ -608,6 +670,161 @@ func (h *ChatHandler) HandleChatRequest(c *gin.Context) {
 			}
 		}
 	}
+	
+	// Procesar keywords y expandir con LLM
+	// Palabras genéricas que no aportan valor a la búsqueda
+	stopWords := map[string]bool{
+		"qué": true, "que": true, "está": true, "esta": true, "haciendo": true,
+		"la": true, "el": true, "en": true, "del": true, "de": true, "los": true,
+		"las": true, "un": true, "una": true, "y": true, "o": true, "es": true,
+		"usach": true, "universidad": true, "santiago": true, "chile": true,
+		"campo": true, "área": true, "tema": true, "ámbito": true,
+	}
+	
+	// Tokenizar la query
+	words := strings.Fields(strings.ToLower(effectiveQuery))
+	var cleanWords []string
+	
+	// Limpiar puntuación y filtrar stop words
+	for _, word := range words {
+		word = strings.Trim(word, ".,;:!?¿¡()[]{}\"'")
+		if len(word) > 2 && !stopWords[word] {
+			cleanWords = append(cleanWords, word)
+		}
+	}
+	
+	// Si tenemos al menos 2 palabras limpias, buscar posibles bigramas
+	if len(cleanWords) >= 2 {
+		// Verificar si las palabras consecutivas podrían formar términos compuestos
+		var finalTerms []string
+		i := 0
+		for i < len(cleanWords) {
+			if i < len(cleanWords)-1 {
+				// Si dos palabras juntas tienen sentido como término técnico
+				// (ej: "mecánica cuántica", "inteligencia artificial")
+				word1 := cleanWords[i]
+				word2 := cleanWords[i+1]
+				
+				// Heurística simple: si la segunda palabra es un adjetivo técnico común
+				if strings.HasSuffix(word2, "ica") || strings.HasSuffix(word2, "ico") ||
+				   strings.HasSuffix(word2, "al") || strings.HasSuffix(word2, "ar") ||
+				   word2 == "cuántica" || word2 == "artificial" || word2 == "molecular" {
+					// Mantener como bigrama
+					finalTerms = append(finalTerms, word1+" "+word2)
+					i += 2 // Saltar ambas palabras
+					continue
+				}
+			}
+			// Si no forma bigrama, agregar palabra individual
+			finalTerms = append(finalTerms, cleanWords[i])
+			i++
+		}
+		
+		effectiveQuery = strings.Join(finalTerms, " ")
+		log.Printf("Extracted terms: %s", effectiveQuery)
+		
+		// Usar LLM para expandir términos relacionados
+		if len(finalTerms) > 0 {
+			expandedTerms, err := h.expandQueryWithLLM(ctx, effectiveQuery)
+			if err != nil {
+				log.Printf("Error expanding query with LLM: %v", err)
+			} else if expandedTerms != "" {
+				effectiveQuery = expandedTerms
+				log.Printf("LLM expanded query to: %s", effectiveQuery)
+			}
+		}
+	} else if len(cleanWords) > 0 {
+		effectiveQuery = strings.Join(cleanWords, " ")
+		log.Printf("Extracted keywords: %s", effectiveQuery)
+	}
+	
+	// Verificar si es una pregunta sobre autores/investigadores y tenemos documentos guardados
+	var session Session
+	session = LoadSession(c)
+	lowerQuery := strings.ToLower(request.Query)
+	isAskingAboutAuthors := strings.Contains(lowerQuery, "autor") || strings.Contains(lowerQuery, "autores") ||
+		strings.Contains(lowerQuery, "investigador") || strings.Contains(lowerQuery, "investigadores") ||
+		strings.Contains(lowerQuery, "quién") || strings.Contains(lowerQuery, "quien") ||
+		strings.Contains(lowerQuery, "realizó") || strings.Contains(lowerQuery, "realizo") ||
+		strings.Contains(lowerQuery, "escribió") || strings.Contains(lowerQuery, "escribio")
+	
+	// Si pregunta por autores y tenemos documentos guardados, responder directamente
+	if isAskingAboutAuthors && len(session.LastDocuments) > 0 {
+		log.Printf("Detected author question with %d saved documents. Responding directly.", len(session.LastDocuments))
+		
+		// Construir respuesta con los autores de los documentos guardados
+		var responseText string
+		if len(session.LastDocuments) == 1 {
+			doc := session.LastDocuments[0]
+			responseText = fmt.Sprintf("Los autores del estudio que mencioné son:\n\n**%s**\n\nEstudio: \"%s\"", 
+				doc.Authors, doc.Title)
+			if doc.Journal != "" {
+				responseText += fmt.Sprintf("\n\nPublicado en: %s", doc.Journal)
+			}
+			if doc.DOI != "" {
+				responseText += fmt.Sprintf("\n\n**DOI:** %s", doc.DOI)
+				responseText += fmt.Sprintf("\n**Enlace:** %s", doc.DOILink)
+			}
+			if doc.Email != "" {
+				responseText += fmt.Sprintf("\n\n**Email de contacto:** %s", doc.Email)
+			}
+			if len(doc.AuthorDetails) > 0 {
+				responseText += "\n\n**Información detallada de autores:**"
+				for _, author := range doc.AuthorDetails {
+					responseText += fmt.Sprintf("\n- %s", author.Name)
+					if author.Email != "" {
+						responseText += fmt.Sprintf(" (Email: %s)", author.Email)
+					}
+					if author.ORCID != "" {
+						responseText += fmt.Sprintf(" (ORCID: %s)", author.ORCID)
+					}
+				}
+			}
+		} else {
+			responseText = "Los autores de los estudios mencionados son:\n\n"
+			for i, doc := range session.LastDocuments {
+				responseText += fmt.Sprintf("%d. **%s**\n   Autores: %s\n", i+1, doc.Title, doc.Authors)
+				if doc.Journal != "" {
+					responseText += fmt.Sprintf("   Publicado en: %s\n", doc.Journal)
+				}
+				if doc.DOI != "" {
+					responseText += fmt.Sprintf("   DOI: %s\n", doc.DOI)
+				}
+				if doc.Email != "" {
+					responseText += fmt.Sprintf("   Email: %s\n", doc.Email)
+				}
+				responseText += "\n"
+			}
+		}
+		
+		// Agregar mensaje a la historia
+		session.History = append(session.History, Message{
+			Role:    "user",
+			Content: request.Query,
+			SentAt:  time.Now(),
+		})
+		session.History = append(session.History, Message{
+			Role:    "bot",
+			Content: responseText,
+			SentAt:  time.Now(),
+		})
+		session.History = trimHistory(session.History)
+		
+		// Guardar sesión
+		if err := SaveSession(c, session); err != nil {
+			log.Printf("Error guardando sesión: %v", err)
+		}
+		
+		// Responder directamente sin hacer búsqueda
+		finalResponse := ChatResponse{
+			ResponseType: "direct_answer",
+			Response:     responseText,
+			Documents:    session.LastDocuments,
+		}
+		c.JSON(http.StatusOK, finalResponse)
+		return
+	}
+	
 	log.Printf(">>> FINAL EFFECTIVE QUERY FOR RAG: %s", effectiveQuery)
 
 	queryVector, err := h.getEmbedding(effectiveQuery)
@@ -643,12 +860,18 @@ func (h *ChatHandler) HandleChatRequest(c *gin.Context) {
 		log.Println("Using HYBRID search mode.")
 		esQuery = gin.H{
 			"query": gin.H{
-				"multi_match": gin.H{
-					"query":     effectiveQuery,
-					"fields":    []string{"ChunkText^10", "OriginalTitle^1"}, // Máxima prioridad al contenido
-					"type":      "best_fields",
-					"fuzziness": "AUTO",
-					"boost":     textSearchBoost,
+				"bool": gin.H{
+					"should": []gin.H{
+						{
+							"multi_match": gin.H{
+								"query":    effectiveQuery,
+								"fields":   []string{"ChunkText^3", "OriginalTitle^5"},
+								"type":     "best_fields",
+								"operator": "OR",
+							},
+						},
+					},
+					"boost": textSearchBoost,
 				},
 			},
 			"knn": gin.H{
@@ -753,6 +976,10 @@ func (h *ChatHandler) HandleChatRequest(c *gin.Context) {
 			"originalauthors":         1,
 			"originalpublicationdate": 1,
 			"chunktext":               1,
+			"doi":                     1,
+			"email":                   1,
+			"journal":                 1,
+			"author_details":          1,
 		})
 
 		mongoCursor, err := collection.Find(ctx, filter, findOpts)
@@ -854,9 +1081,12 @@ func (h *ChatHandler) HandleChatRequest(c *gin.Context) {
 
 	log.Println("Proceeding with direct LLM call for answer generation (either follow-up or no clear topics).")
 
-	session := LoadSession(c)
+	// Recargar sesión si no se cargó antes
 	if session.ID == "" {
-		session = newSession()
+		session = LoadSession(c)
+		if session.ID == "" {
+			session = newSession()
+		}
 	}
 
 	recentHistoryStr := buildContextQuery(session.History, effectiveQuery)
@@ -868,19 +1098,26 @@ func (h *ChatHandler) HandleChatRequest(c *gin.Context) {
 1.  **Análisis de Pregunta y Contexto:**
     * Interpreta la "Pregunta del usuario" (en español).
     * Analiza CUIDADOSAMENTE el "Contexto Proporcionado". Asume que TODO el contexto es de investigación USACH. Si está en inglés, debes entenderlo y usarlo para tu respuesta en ESPAÑOL.
+    * IMPORTANTE: Cada documento incluye información sobre Título, Autores, Fecha y Contenido. Cuando el usuario pregunte por los investigadores o autores de un estudio mencionado previamente, busca esta información en el Historial Reciente para identificar el estudio específico.
+    * CRÍTICO: Si el usuario pregunta sobre "los investigadores de este estudio" o similar, DEBES buscar en el Historial Reciente cuál fue el último estudio específico mencionado y proporcionar los nombres de los autores que aparecen en el campo "Autores:" de ese documento. NO hagas una nueva búsqueda general.
+    * CUANDO TE PREGUNTEN POR AUTORES: Si el usuario pregunta "¿Quiénes son los autores?" o "¿Quién realizó este estudio?", busca en el contexto actual y en el historial reciente el estudio específico mencionado y responde SOLO con los nombres de los autores de ESE estudio específico. NO listes todos los autores de todos los documentos.
 
 2.  **Respuesta Basada en Contexto:**
     * **Si encuentras información relevante y directa** para la "Pregunta del usuario" en el "Contexto Proporcionado":
-        1.  Inicia con un saludo breve y entusiasta si es el comienzo de una nueva línea de consulta (ej. "¡Hola! Soy InvestigaUSACH...", "¡Excelente pregunta!"). Para seguimientos, sé más directo.
+        1.  NO inicies con un saludo de presentación. Ve directo al contenido de la respuesta. Solo usa expresiones breves como "¡Excelente pregunta!" cuando sea apropiado.
         2.  Resume la información MÁS DIRECTAMENTE RELEVANTE de forma concisa (1-3 frases clave) para responder a la pregunta.
-        3.  Si el contexto lo permite, elabora con más detalles, explica conceptos si es necesario, y conecta información de diferentes fragmentos del contexto. Intenta citar de forma general la fuente si es un estudio particular (ej. "Según un estudio de la USACH sobre X...", "La publicación titulada 'Y' indica que...").
-        4.  Finaliza tu respuesta con un párrafo separado que contenga EXACTAMENTE 3 preguntas sugeridas breves y específicas sobre aspectos del tema que SÍ estén cubiertos en el contexto. Formato:
+        3.  Si el contexto lo permite, elabora con más detalles, explica conceptos si es necesario, y conecta información de diferentes documentos del contexto. Intenta citar de forma general la fuente si es un estudio particular (ej. "Según un estudio de la USACH sobre X...", "La publicación titulada 'Y' indica que...").
+        4.  IMPORTANTE: NO menciones las opciones de contacto o enlaces a menos que el usuario pregunte EXPLÍCITAMENTE sobre cómo contactar a los autores, obtener el artículo completo, o más información de contacto. Si el usuario solo pregunta sobre el contenido de la investigación, NO menciones las opciones de contacto.
+        5.  Finaliza tu respuesta con un párrafo separado que contenga EXACTAMENTE 3 preguntas sugeridas. 
+            CRÍTICO: Las preguntas SOLO deben ser sobre información que REALMENTE TIENES en el contexto actual. NO ofrezcas explorar temas sobre los que no tienes información disponible.
+            - Cada pregunta debe referirse a información ESPECÍFICA que acabas de presentar
+            - Si mencionaste que cierto aspecto existe, SOLO ofrece explorarlo si REALMENTE tienes más detalles en el contexto
+            - NUNCA ofrezcas profundizar en algo si no tienes la información para responder
             
-            [Tu respuesta principal aquí...]
-            
-            ¿Te gustaría profundizar en la metodología utilizada en el estudio?
-            ¿Quieres conocer más sobre los resultados obtenidos?
-            ¿Deseas explorar las aplicaciones prácticas de esta investigación?
+            Formato de las preguntas (SOLO sobre información disponible):
+            ¿Te gustaría conocer más sobre [aspecto específico que SÍ tienes en el contexto]?
+            ¿Quieres profundizar en [otro tema del cual SÍ tienes información adicional]?
+            ¿Deseas explorar [tercer aspecto sobre el cual PUEDES proporcionar más detalles]?
 
 3.  **Manejo de Contexto Insuficiente o Falta de Aspectos Específicos:**
     * **CASO A: La "Pregunta del usuario" es un seguimiento sobre un TEMA CENTRAL ya establecido en la conversación (visible en el "Historial Reciente"), pero el "Contexto Proporcionado" actual NO cubre el ASPECTO ESPECÍFICO solicitado sobre ese TEMA CENTRAL.**
@@ -1048,37 +1285,96 @@ func (h *ChatHandler) HandleChatRequest(c *gin.Context) {
 	if strings.Contains(contextString, "No se encontró contexto relevante") && !strings.Contains(llmResponseText, "No he encontrado información específica") {
 		log.Println("WARN: LLM generated a response even though context was empty and it didn't state no info found.")
 	}
+	
+	// Guardar documentos relevantes en la sesión antes de responder
+	if len(mongoResults) > 0 {
+		session.LastDocuments = []DocumentInfo{}
+		
+		// Buscar qué documentos fueron mencionados específicamente en la respuesta del LLM
+		mentionedDocs := []MongoResult{}
+		for _, doc := range mongoResults {
+			// Buscar si el título o palabras clave del documento aparecen en la respuesta
+			if strings.Contains(llmResponseText, doc.OriginalTitle) {
+				mentionedDocs = append(mentionedDocs, doc)
+				log.Printf("Found mentioned document by title: %s", doc.OriginalTitle)
+			} else if strings.Contains(llmResponseText, "Myers-Pospelov") && strings.Contains(doc.OriginalTitle, "Myers-Pospelov") {
+				mentionedDocs = append(mentionedDocs, doc)
+				log.Printf("Found mentioned document by keyword: %s", doc.OriginalTitle)
+			} else if strings.Contains(strings.ToLower(llmResponseText), "microcausality") && strings.Contains(strings.ToLower(doc.OriginalTitle), "microcausality") {
+				mentionedDocs = append(mentionedDocs, doc)
+				log.Printf("Found mentioned document by keyword: %s", doc.OriginalTitle)
+			} else {
+				// Buscar si se mencionan los autores
+				authors := strings.Split(doc.OriginalAuthors, ";")
+				for _, author := range authors {
+					author = strings.TrimSpace(author)
+					if author != "" && strings.Contains(llmResponseText, author) {
+						mentionedDocs = append(mentionedDocs, doc)
+						log.Printf("Found mentioned document by author: %s", doc.OriginalTitle)
+						break
+					}
+				}
+			}
+		}
+		
+		// Si encontramos documentos mencionados, usar esos. Si no, usar solo el primero (más relevante)
+		docsToSave := mentionedDocs
+		if len(docsToSave) == 0 && len(mongoResults) > 0 {
+			// Si no detectamos menciones específicas, guardar solo el más relevante
+			docsToSave = []MongoResult{mongoResults[0]}
+			log.Printf("No specifically mentioned documents found, using most relevant result")
+		}
+		
+		for _, doc := range docsToSave {
+			docInfo := DocumentInfo{
+				Title:         doc.OriginalTitle,
+				Authors:       doc.OriginalAuthors,
+				DOI:           doc.DOI,
+				Email:         doc.Email,
+				Journal:       doc.Journal,
+				AuthorDetails: doc.AuthorDetails,
+			}
+			if doc.DOI != "" {
+				docInfo.DOILink = "https://doi.org/" + doc.DOI
+			}
+			session.LastDocuments = append(session.LastDocuments, docInfo)
+		}
+		log.Printf("Saved %d documents to session (mentioned: %d, total available: %d)", len(session.LastDocuments), len(mentionedDocs), len(mongoResults))
+	}
+	
+	// Guardar sesión actualizada con documentos
+	if err := SaveSession(c, session); err != nil {
+		log.Printf("Error guardando sesión con documentos: %v", err)
+	}
 
+	// Solo incluir documentos si el usuario pregunta específicamente por contacto o quiere más información
+	isAskingForContact := strings.Contains(strings.ToLower(request.Query), "contacto") ||
+		strings.Contains(strings.ToLower(request.Query), "contactar") ||
+		strings.Contains(strings.ToLower(request.Query), "email") ||
+		strings.Contains(strings.ToLower(request.Query), "correo") ||
+		strings.Contains(strings.ToLower(request.Query), "obtener el artículo") ||
+		strings.Contains(strings.ToLower(request.Query), "acceder al artículo") ||
+		strings.Contains(strings.ToLower(request.Query), "conseguir el paper") ||
+		strings.Contains(strings.ToLower(request.Query), "más información")
+	
 	finalResponse = ChatResponse{
 		ResponseType:  responseType,
 		Response:      responseText,
 		Options:       suggestedQuestions, // Agregar las preguntas extraídas
 		RetrievedDocs: retrievedDocsForClientResponse,
 	}
+	
+	// Solo agregar Documents si el usuario pregunta por contacto explícitamente
+	if isAskingForContact && len(session.LastDocuments) > 0 {
+		finalResponse.Documents = session.LastDocuments
+		log.Printf("Including document contact info as user requested contact/more info")
+	}
+	
 	c.JSON(http.StatusOK, finalResponse)
 }
 
 // --- Funciones Auxiliares ---
 
-func buildRecentHistoryString(history []ChatMessage) string {
-	if len(history) == 0 {
-		return "(No hay historial previo en esta sesión)"
-	}
-	var recentHistory strings.Builder
-	// Mostrar máximo los últimos 4 mensajes (2 intercambios)
-	startIndex := 0
-	if len(history) > 4 {
-		startIndex = len(history) - 4
-	}
-	for i := startIndex; i < len(history); i++ {
-		role := "Usuario"
-		if history[i].Role == "model" || history[i].Role == "bot" || history[i].Role == "asistente" {
-			role = "Asistente"
-		}
-		recentHistory.WriteString(fmt.Sprintf("%s: %s\n", role, history[i].Text))
-	}
-	return recentHistory.String()
-}
 
 func pluralize(count int, singular, plural string) string {
 	if count == 1 {

@@ -135,6 +135,15 @@ func main() {
 	{
 		chatHandler := handlers.NewChatHandler(mongoClient, esClient, dbName, collectionName, esIndexName, googleAPIKey)
 		api.POST("/chat", chatHandler.HandleChatRequest)
+		
+		// Rutas ORCID (comentadas hasta tener las credenciales)
+		// orcidToken := os.Getenv("ORCID_ACCESS_TOKEN")
+		// if orcidToken != "" {
+		//     orcidHandler := handlers.NewORCIDHandler(mongoClient, orcidToken, false)
+		//     api.GET("/orcid/search", orcidHandler.SearchAuthor)
+		//     api.GET("/orcid/author/:orcid_id", orcidHandler.GetAuthorByORCID)
+		//     api.GET("/article/:article_id/authors-info", orcidHandler.GetArticleAuthorsInfo)
+		// }
 	}
 
 	router.GET("/ping", func(c *gin.Context) {
